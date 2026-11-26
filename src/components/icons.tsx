@@ -233,6 +233,64 @@ export const ArrowUpDown = (p: IconProps) => (
 );
 
 
+
+export const Copy = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="9" y="9" width="11" height="11" rx="2" />
+    <path d="M5 15V6a2 2 0 0 1 2-2h8" />
+  </Svg>
+);
+
+export const Cut = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="6.5" cy="6.5" r="2.5" />
+    <circle cx="6.5" cy="17.5" r="2.5" />
+    <path d="M8.5 8.2 19 18M8.5 15.8 19 6" />
+  </Svg>
+);
+
+export const Paste = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="6" y="4" width="12" height="17" rx="2" />
+    <path d="M9 4V3h6v1" />
+    <path d="M9 10h6M9 14h6" opacity=".6" />
+  </Svg>
+);
+
+export const Invert = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="8" />
+    <path d="M12 4v16" />
+    <path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor" stroke="none" opacity=".55" />
+  </Svg>
+);
+
+export const Expand = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
+  </Svg>
+);
+
+export const Shrink = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" />
+  </Svg>
+);
+
+export const FlipH = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M12 3v18" strokeDasharray="2 3" />
+    <path d="M9 7 4 12l5 5V7ZM15 7l5 5-5 5V7Z" />
+  </Svg>
+);
+
+export const FlipV = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3 12h18" strokeDasharray="2 3" />
+    <path d="M7 9l5-5 5 5H7ZM7 15l5 5 5-5H7Z" />
+  </Svg>
+);
+
 export const Eye = (p: IconProps) => (
   <Svg {...p}>
     <path d="M2.8 12S6 6.5 12 6.5 21.2 12 21.2 12 18 17.5 12 17.5 2.8 12 2.8 12Z" />

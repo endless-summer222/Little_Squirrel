@@ -63,11 +63,16 @@ export function stamp(
   y: number,
   size: number,
   c: RGBA,
+  mask?: Uint8Array | null,
 ): void {
   const half = Math.floor(size / 2);
   for (let dy = 0; dy < size; dy += 1) {
     for (let dx = 0; dx < size; dx += 1) {
-      setPixel(buf, w, h, x + dx - half, y + dy - half, c);
+      const px = x + dx - half;
+      const py = y + dy - half;
+      if (px < 0 || py < 0 || px >= w || py >= h) continue;
+      if (mask && !mask[py * w + px]) continue;
+      setPixel(buf, w, h, px, py, c);
     }
   }
 }
@@ -83,6 +88,7 @@ export function strokeLine(
   y1: number,
   size: number,
   c: RGBA,
+  mask?: Uint8Array | null,
 ): void {
   let x = x0;
   let y = y0;
@@ -93,7 +99,7 @@ export function strokeLine(
   let err = dx + dy;
 
   for (;;) {
-    stamp(buf, w, h, x, y, size, c);
+    stamp(buf, w, h, x, y, size, c, mask);
     if (x === x1 && y === y1) break;
     const e2 = 2 * err;
     if (e2 >= dy) {

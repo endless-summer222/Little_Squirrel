@@ -1155,3 +1155,72 @@ input.hue-track::-webkit-slider-thumb {
   outline: 2px dashed var(--green);
   outline-offset: -2px;
 }
+
+.chipbtn.on {
+  background: var(--green);
+  color: var(--accent-ink);
+}
+
+.sel-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 64px;
+  padding: 0 10px;
+  background: var(--bar);
+  border-top: 1px solid var(--divider);
+  overflow-x: auto;
+  scrollbar-width: none;
+  flex: none;
+}
+
+.sel-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.sel-btn {
+  flex: none;
+  width: 58px;
+  height: 54px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border-radius: 10px;
+  color: #b9b9bf;
+  font-size: 10px;
+}
+
+.sel-btn.active,
+.sel-btn:not(:disabled):active {
+  color: var(--green);
+}
+
+.sel-btn:disabled {
+  opacity: 0.35;
+}
+
+.sel-chip {
+  flex: none;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 15px;
+  background: #2c2c31;
+  color: #dcdce0;
+  font-size: 12px;
+}
+
+.sel-chip.on {
+  background: var(--green);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.sel-sep {
+  flex: none;
+  width: 1px;
+  height: 32px;
+  background: #34343a;
+  margin: 0 2px;
+}

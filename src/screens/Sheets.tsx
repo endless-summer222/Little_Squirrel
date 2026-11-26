@@ -2,6 +2,7 @@
 import { converter, formatHex } from 'culori';
 import { parseHex } from '../core/pixels';
 import type { BlendMode, Layer, LayerGroup } from '../core/types';
+import type { SelectTool } from '../components/CanvasStage';
 import { useApp } from '../state/useApp';
 import { ColorWheel } from '../components/ColorWheel';
 import {
@@ -11,7 +12,6 @@ import {
   EyeOff,
   Folder,
   Lasso,
-  Marquee,
   Move,
   Pencil,
   RectIcon,
@@ -431,34 +431,44 @@ export function ColorSheet({
 
 export type SelectionTool = 'rect' | 'ellipse' | 'lasso' | 'polygon' | 'wand' | 'move';
 
-export function SelectionSheet({ onPick }: { onPick: (tool: SelectionTool) => void }) {
-  const items: { id: SelectionTool; label: string; icon: ReactNode }[] = [
+export function SelectionSheet({
+  tool,
+  onPick,
+  onSelectAll,
+  onInvert,
+}: {
+  tool: SelectTool;
+  onPick: (t: SelectTool) => void;
+  onSelectAll: () => void;
+  onInvert: () => void;
+}) {
+  const tools: { id: SelectTool; label: string; icon: ReactNode }[] = [
     { id: 'rect', label: '矩形', icon: <RectIcon size={20} /> },
     { id: 'ellipse', label: '椭圆', icon: <Ellipse size={20} /> },
     { id: 'lasso', label: '套索', icon: <Lasso size={20} /> },
-    { id: 'polygon', label: '多边形', icon: <Marquee size={20} /> },
     { id: 'wand', label: '魔棒', icon: <Wand size={20} /> },
     { id: 'move', label: '移动', icon: <Move size={20} /> },
   ];
   return (
-    <Sheet title="选区">
+    <Sheet title="选区工具">
       <div className="sel-grid">
-        {items.map((it) => (
-          <button key={it.id} className="sel-tool" onClick={() => onPick(it.id)}>
+        {tools.map((it) => (
+          <button
+            key={it.id}
+            className={`sel-tool ${tool === it.id ? 'sel' : ''}`}
+            onClick={() => onPick(it.id)}
+          >
             {it.icon}
             <span>{it.label}</span>
           </button>
         ))}
       </div>
       <div className="sel-actions">
-        {['全选', '反选', '取消选择', '扩展 1px', '收缩 1px'].map((t) => (
-          <button key={t} className="chipbtn">
-            {t}
-          </button>
-        ))}
+        <button className="chipbtn" onClick={onSelectAll}>全选</button>
+        <button className="chipbtn" onClick={onInvert}>反选</button>
       </div>
       <p className="muted" style={{ margin: '12px 0 0' }}>
-        选区引擎将在 M2 接入；当前可先切到「移动」查看工具栏状态。
+        默认矩形；选中工具后在画布上拖拽创建选区。
       </p>
     </Sheet>
   );
@@ -707,10 +717,57 @@ export function LayersSheet({
   );
 }
 
-export function EffectsSheet({ onNoise }: { onNoise: (amount: number) => void }) {
+export function EffectsSheet({
+  onNoise,
+  hasSelection,
+  onAdjustHSL,
+}: {
+  onNoise: (amount: number) => void;
+  hasSelection: boolean;
+  onAdjustHSL: (dL: number, dS: number) => void;
+}) {
   const [amount, setAmount] = useState(18);
+  const [dL, setDL] = useState(0);
+  const [dS, setDS] = useState(0);
   return (
     <Sheet title="效果">
+      <div className="row">
+        <span>选区明度 / 饱和度</span>
+        <span className="muted">{hasSelection ? '已选中' : '无选区'}</span>
+      </div>
+      {hasSelection && (
+        <>
+          <div className="slider-line">
+            <span className="slabel">亮</span>
+            <input
+              type="range"
+              min={-100}
+              max={100}
+              value={dL}
+              onChange={(e) => setDL(Number(e.target.value))}
+            />
+            <span className="sval">{dL}</span>
+          </div>
+          <div className="slider-line">
+            <span className="slabel">饱和</span>
+            <input
+              type="range"
+              min={-100}
+              max={100}
+              value={dS}
+              onChange={(e) => setDS(Number(e.target.value))}
+            />
+            <span className="sval">{dS}</span>
+          </div>
+          <button
+            className="primary"
+            style={{ width: '100%', margin: '8px 0 4px' }}
+            onClick={() => onAdjustHSL(dL, dS)}
+          >
+            应用到选区
+          </button>
+        </>
+      )}
       <div className="row">
         <span>噪点</span>
         <span className="muted">{amount}%</span>

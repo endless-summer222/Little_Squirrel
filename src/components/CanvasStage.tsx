@@ -15,6 +15,15 @@ import {
   type RGBA,
 } from '../core/pixels';
 import type { Rect } from '../core/layers';
+import { boundsOf, magicWand, pointInSelection, type Selection } from '../core/selection';
+
+export type SelectShape =
+  | { kind: 'rect'; rect: Rect }
+  | { kind: 'ellipse'; rect: Rect }
+  | { kind: 'lasso'; points: { x: number; y: number }[] }
+  | { kind: 'wand'; x: number; y: number };
+
+export type SelectTool = 'rect' | 'ellipse' | 'lasso' | 'wand' | 'move';
 
 export type ToolId = 'pencil' | 'eraser' | 'bucket' | 'dropper' | 'shade' | 'select';
 
@@ -38,6 +47,16 @@ interface Props {
   onDirty: (rect: Rect) => void;
   onPick: (hex: string) => void;
   onViewport?: (w: number, h: number) => void;
+  selection: Selection | null;
+  selPath: Path2D | null;
+  selTool: SelectTool;
+  selOffset: { x: number; y: number };
+  bucketTolerance: number;
+  contiguous: boolean;
+  onSelectShape: (shape: SelectShape) => void;
+  onMoveStart: (x: number, y: number) => void;
+  onMoveDelta: (dx: number, dy: number) => void;
+  onMoveEnd: () => void;
 }
 
 const toHsl = converter('hsl');
@@ -88,10 +107,23 @@ export function CanvasStage({
   onDirty,
   onPick,
   onViewport,
+  selection,
+  selPath,
+  selTool,
+  selOffset,
+  bucketTolerance,
+  contiguous,
+  onSelectShape,
+  onMoveStart,
+  onMoveDelta,
+  onMoveEnd,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [viewport, setViewport] = useState({ w: 0, h: 0 });
+  const [ants, setAnts] = useState(0);
+  const [shape, setShape] = useState<{ start: { x: number; y: number }; cur: { x: number; y: number }; points: { x: number; y: number }[] } | null>(null);
+  const moving = useRef<{ x: number; y: number } | null>(null);
   const drawing = useRef(false);
   const last = useRef<{ x: number; y: number } | null>(null);
   const visited = useRef<Uint8Array | null>(null);
@@ -178,6 +210,56 @@ export function CanvasStage({
     ctx.lineWidth = 1;
     ctx.strokeRect(pan.x - 0.5, pan.y - 0.5, iw + 1, ih + 1);
 
+    // 选区预览
+    if (shape) {
+      ctx.save();
+      ctx.beginPath();
+      if (selTool === 'rect') {
+        const x = Math.min(shape.start.x, shape.cur.x) * zoom + pan.x;
+        const y = Math.min(shape.start.y, shape.cur.y) * zoom + pan.y;
+        const rw = Math.abs(shape.cur.x - shape.start.x) * zoom;
+        const rh = Math.abs(shape.cur.y - shape.start.y) * zoom;
+        ctx.rect(x, y, rw, rh);
+      } else if (selTool === 'ellipse') {
+        const x = Math.min(shape.start.x, shape.cur.x) * zoom + pan.x;
+        const y = Math.min(shape.start.y, shape.cur.y) * zoom + pan.y;
+        const rw = Math.abs(shape.cur.x - shape.start.x) * zoom;
+        const rh = Math.abs(shape.cur.y - shape.start.y) * zoom;
+        ctx.ellipse(x + rw / 2, y + rh / 2, rw / 2, rh / 2, 0, 0, Math.PI * 2);
+      } else {
+        shape.points.forEach((pt, i) => {
+          const px = pt.x * zoom + pan.x;
+          const py = pt.y * zoom + pan.y;
+          if (i === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        });
+      }
+      ctx.fillStyle = 'rgba(157,255,235,0.12)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // 蚂蚁线
+    if (selPath) {
+      ctx.save();
+      ctx.translate(pan.x, pan.y);
+      ctx.scale(zoom, zoom);
+      ctx.translate(selOffset.x, selOffset.y);
+      ctx.lineWidth = 1 / zoom;
+      ctx.setLineDash([4 / zoom, 4 / zoom]);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineDashOffset = -ants / zoom;
+      ctx.stroke(selPath);
+      ctx.strokeStyle = '#000000';
+      ctx.lineDashOffset = (-ants + 4) / zoom;
+      ctx.stroke(selPath);
+      ctx.restore();
+    }
+
     // 网格（只画可见范围）
     if (zoom >= 8 && iw <= 200000 && ih <= 200000) {
       const x0 = Math.max(0, Math.floor(-pan.x / zoom));
@@ -194,11 +276,17 @@ export function CanvasStage({
         ctx.fillRect(Math.max(0, pan.x), py, Math.min(vw, iw), 1);
       }
     }
-  }, [source, width, height, zoom, pan, viewport]);
+  }, [source, width, height, zoom, pan, viewport, selection, selPath, selTool, selOffset, shape, ants]);
 
   useEffect(() => {
     draw();
   }, [draw, version]);
+
+  useEffect(() => {
+    if (!selPath) return;
+    const timer = window.setInterval(() => setAnts((a) => a + 2), 120);
+    return () => window.clearInterval(timer);
+  }, [selPath]);
 
   const toTexel = (clientX: number, clientY: number) => {
     const el = wrapRef.current;
@@ -215,7 +303,18 @@ export function CanvasStage({
     const rgba: RGBA =
       tool === 'eraser' ? { r: 0, g: 0, b: 0, a: 0 } : { ...parseHex(color), a: alpha };
     const from = last.current ?? { x, y };
-    strokeLine(activePixels, width, height, from.x, from.y, x, y, brush, rgba);
+    strokeLine(
+      activePixels,
+      width,
+      height,
+      from.x,
+      from.y,
+      x,
+      y,
+      brush,
+      rgba,
+      selection?.mask,
+    );
     const half = Math.floor(brush / 2);
     onDirty(
       clampRect(
@@ -244,6 +343,7 @@ export function CanvasStage({
         const idx = py * width + px;
         if (seen[idx]) continue;
         seen[idx] = 1;
+        if (selection && !selection.mask[idx]) continue;
         const src = getPixel(activePixels, width, height, px, py);
         if (src.a === 0) continue;
         const hsl = toHsl({ mode: 'rgb', r: src.r / 255, g: src.g / 255, b: src.b / 255 });
@@ -266,32 +366,23 @@ export function CanvasStage({
 
   const floodFill = (sx: number, sy: number) => {
     if (!activePixels) return;
-    const target = getPixel(activePixels, width, height, sx, sy);
-    const fill = parseHex(color);
-    if (target.r === fill.r && target.g === fill.g && target.b === fill.b && target.a === alpha)
-      return;
-    const stack: [number, number][] = [[sx, sy]];
-    const seen = new Uint8Array(width * height);
-    let minX = sx;
-    let minY = sy;
-    let maxX = sx;
-    let maxY = sy;
-    while (stack.length) {
-      const [x, y] = stack.pop() as [number, number];
-      if (x < 0 || y < 0 || x >= width || y >= height) continue;
-      const idx = y * width + x;
-      if (seen[idx]) continue;
-      seen[idx] = 1;
-      const p = getPixel(activePixels, width, height, x, y);
-      if (p.r !== target.r || p.g !== target.g || p.b !== target.b || p.a !== target.a) continue;
-      setPixel(activePixels, width, height, x, y, { ...fill, a: alpha });
-      if (x < minX) minX = x;
-      if (y < minY) minY = y;
-      if (x > maxX) maxX = x;
-      if (y > maxY) maxY = y;
-      stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
+    const region = magicWand(activePixels, width, height, sx, sy, {
+      tolerance: bucketTolerance,
+      contiguous,
+      sample: 'layer',
+    });
+    const fill = { ...parseHex(color), a: alpha };
+    const b = boundsOf(region, width, height);
+    if (!b.w || !b.h) return;
+    for (let y = b.y; y < b.y + b.h; y += 1) {
+      for (let x = b.x; x < b.x + b.w; x += 1) {
+        const idx = y * width + x;
+        if (!region[idx]) continue;
+        if (selection && !selection.mask[idx]) continue;
+        setPixel(activePixels, width, height, x, y, fill);
+      }
     }
-    onDirty(clampRect(minX, minY, maxX - minX + 1, maxY - minY + 1, width, height));
+    onDirty(b);
     draw();
   };
 
@@ -330,7 +421,22 @@ export function CanvasStage({
       floodFill(x, y);
       return;
     }
-    if (tool === 'select' || !activePixels) return;
+    if (tool === 'select') {
+      if (selTool === 'wand') {
+        onSelectShape({ kind: 'wand', x, y });
+        return;
+      }
+      if (selTool === 'move') {
+        if (selection && pointInSelection(selection, x, y, width)) {
+          moving.current = { x, y };
+          onMoveStart(x, y);
+        }
+        return;
+      }
+      setShape({ start: { x, y }, cur: { x, y }, points: [{ x, y }] });
+      return;
+    }
+    if (!activePixels) return;
 
     onBeginStroke();
     drawing.current = true;
@@ -366,6 +472,23 @@ export function CanvasStage({
       return;
     }
 
+    if (tool === 'select') {
+      const tx = Math.max(0, Math.min(width - 1, toTexel(e.clientX, e.clientY).x));
+      const ty = Math.max(0, Math.min(height - 1, toTexel(e.clientX, e.clientY).y));
+      if (moving.current) {
+        onMoveDelta(tx - moving.current.x, ty - moving.current.y);
+        return;
+      }
+      if (shape) {
+        const points =
+          selTool === 'lasso'
+            ? [...shape.points, { x: tx, y: ty }].slice(-2000)
+            : shape.points;
+        setShape({ ...shape, cur: { x: tx, y: ty }, points });
+      }
+      return;
+    }
+
     if (!drawing.current) return;
     const { x, y } = toTexel(e.clientX, e.clientY);
     if (x < 0 || y < 0 || x >= width || y >= height) return;
@@ -376,6 +499,26 @@ export function CanvasStage({
   const endPointer = (e: ReactPointerEvent<HTMLDivElement>) => {
     pointers.current.delete(e.pointerId);
     if (pointers.current.size < 2) pinch.current = null;
+    if (tool === 'select') {
+      if (moving.current) {
+        moving.current = null;
+        onMoveEnd();
+      }
+      if (shape) {
+        const x = Math.min(shape.start.x, shape.cur.x);
+        const y = Math.min(shape.start.y, shape.cur.y);
+        const rw = Math.abs(shape.cur.x - shape.start.x) + 1;
+        const rh = Math.abs(shape.cur.y - shape.start.y) + 1;
+        if (selTool === 'rect' && rw > 1 && rh > 1) {
+          onSelectShape({ kind: 'rect', rect: { x, y, w: rw, h: rh } });
+        } else if (selTool === 'ellipse' && rw > 1 && rh > 1) {
+          onSelectShape({ kind: 'ellipse', rect: { x, y, w: rw, h: rh } });
+        } else if (selTool === 'lasso' && shape.points.length > 2) {
+          onSelectShape({ kind: 'lasso', points: shape.points });
+        }
+        setShape(null);
+      }
+    }
     if (drawing.current) {
       drawing.current = false;
       last.current = null;
