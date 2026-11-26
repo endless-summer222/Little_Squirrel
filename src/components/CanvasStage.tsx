@@ -5,8 +5,8 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
-import { converter } from 'culori';
 import {
+  adjustPixel,
   getPixel,
   parseHex,
   setPixel,
@@ -69,9 +69,6 @@ interface Props {
   onLongPressPick: (x: number, y: number) => void;
   onStrokeEnd: () => void;
 }
-
-const toHsl = converter('hsl');
-const toRgb = converter('rgb');
 
 let checkerPattern: CanvasPattern | null = null;
 function getChecker(ctx: CanvasRenderingContext2D): CanvasPattern | null {
@@ -389,18 +386,7 @@ export function CanvasStage({
         if (alphaLock && activePixels[idx * 4 + 3] === 0) continue;
         const src = getPixel(activePixels, width, height, px, py);
         if (src.a === 0) continue;
-        const hsl = toHsl({ mode: 'rgb', r: src.r / 255, g: src.g / 255, b: src.b / 255 });
-        if (!hsl) continue;
-        const l = Math.min(1, Math.max(0, (hsl.l ?? 0) + shadeL / 100));
-        const s = Math.min(1, Math.max(0, (hsl.s ?? 0) * (1 + shadeS / 100)));
-        const rgb = toRgb({ mode: 'hsl', h: hsl.h ?? 0, s, l });
-        if (!rgb) continue;
-        setPixel(activePixels, width, height, px, py, {
-          r: Math.round((rgb.r ?? 0) * 255),
-          g: Math.round((rgb.g ?? 0) * 255),
-          b: Math.round((rgb.b ?? 0) * 255),
-          a: src.a,
-        });
+        setPixel(activePixels, width, height, px, py, adjustPixel(src, shadeL, shadeS));
       }
     }
     onDirty(clampRect(x - half, y - half, brush, brush, width, height));

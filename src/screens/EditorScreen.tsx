@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode, type RefObject } from 'react';
+import { createPortal } from 'react-dom';
 import { useApp } from '../state/useApp';
 import {
   CanvasStage,
@@ -38,11 +39,7 @@ import {
   Sparkles,
   Undo,
 } from '../components/icons';
-import { cloneBuffer, parseHex, toHex } from '../core/pixels';
-import { converter } from 'culori';
-
-const toHsl = converter('hsl');
-const toRgb = converter('rgb');
+import { adjustPixel, cloneBuffer, parseHex, toHex } from '../core/pixels';
 import {
   BLEND_TO_GCO,
   activeLayer,
@@ -75,7 +72,6 @@ import {
   GridSheet,
   LayersSheet,
   OverlaySheet,
-  SelectionSheet,
 } from './Sheets';
 import { saveProjectPng } from '../core/export';
 
@@ -107,6 +103,35 @@ interface DocSnap {
   activeId: string;
 }
 type Snap = LayerSnap | DocSnap;
+
+function DropMenu({
+  anchorRef,
+  open,
+  onClose,
+  children,
+}: {
+  anchorRef: RefObject<HTMLButtonElement | null>;
+  open: boolean;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  if (!open) return null;
+  const r = anchorRef.current?.getBoundingClientRect();
+  const left = Math.max(8, Math.min(r?.left ?? 8, window.innerWidth - 172));
+  const top = (r?.top ?? 240) - 8;
+  return createPortal(
+    <>
+      <div className="mode-backdrop" onClick={onClose} />
+      <div
+        className="mode-menu"
+        style={{ position: 'fixed', left, top, bottom: 'auto', transform: 'translateY(-100%)' }}
+      >
+        {children}
+      </div>
+    </>,
+    document.body,
+  );
+}
 
 interface Floating {
   pixels: Uint8ClampedArray;
@@ -185,6 +210,10 @@ export function EditorScreen() {
   const [selPath, setSelPath] = useState<Path2D | null>(null);
   const [selTool, setSelTool] = useState<SelectTool>('rect');
   const [selMode, setSelMode] = useState<SelMode>('new');
+  const [modeMenu, setModeMenu] = useState(false);
+  const [toolMenu, setToolMenu] = useState(false);
+  const toolBtnRef = useRef<HTMLButtonElement>(null);
+  const modeBtnRef = useRef<HTMLButtonElement>(null);
   const [gridColor, setGridColor] = useState(() =>
     typeof localStorage === 'undefined' ? '#FFFFFF' : localStorage.getItem('pixeluv.gridColor') ?? '#FFFFFF',
   );
@@ -351,7 +380,7 @@ export function EditorScreen() {
   }, [width, height]);
 
   useEffect(() => {
-    if (!overlay?.dataUrl) {
+    if (!overlay?.dataUrl || overlay.dataUrl.length > 1_500_000) {
       overlayImg.current = null;
       rebuild(layersRef.current);
       return;
@@ -920,20 +949,14 @@ export function EditorScreen() {
       if (!mask[i]) continue;
       const p = i * 4;
       if (active.pixels[p + 3] === 0) continue;
-      const hsl = toHsl({
-        mode: 'rgb',
-        r: active.pixels[p] / 255,
-        g: active.pixels[p + 1] / 255,
-        b: active.pixels[p + 2] / 255,
-      });
-      if (!hsl) continue;
-      const l = Math.min(1, Math.max(0, (hsl.l ?? 0) + dL / 100));
-      const sat = Math.min(1, Math.max(0, (hsl.s ?? 0) * (1 + dS / 100)));
-      const rgb = toRgb({ mode: 'hsl', h: hsl.h ?? 0, s: sat, l });
-      if (!rgb) continue;
-      active.pixels[p] = Math.round((rgb.r ?? 0) * 255);
-      active.pixels[p + 1] = Math.round((rgb.g ?? 0) * 255);
-      active.pixels[p + 2] = Math.round((rgb.b ?? 0) * 255);
+      const out = adjustPixel(
+        { r: active.pixels[p], g: active.pixels[p + 1], b: active.pixels[p + 2], a: active.pixels[p + 3] },
+        dL,
+        dS,
+      );
+      active.pixels[p] = out.r;
+      active.pixels[p + 1] = out.g;
+      active.pixels[p + 2] = out.b;
     }
     paintLayerCanvas(active);
     recomposite(fullRect(width, height), layers);
@@ -1269,6 +1292,11 @@ export function EditorScreen() {
               showToast(`已取色 ${hex}`);
             }}
           />
+          {tool === 'select' && selection && (
+            <button className="canvas-clear" onClick={selClear}>
+              清除选区
+            </button>
+          )}
           <button
             className="canvas-help icon-btn"
             aria-label="帮助"
@@ -1281,24 +1309,83 @@ export function EditorScreen() {
 
       {tool === 'select' ? (
         <div className="sel-bar">
-          <button className="sel-btn" onClick={() => setSheet('selection')}>
-            {selTool === 'rect' && <RectIcon size={22} />}
-            {selTool === 'ellipse' && <Ellipse size={22} />}
-            {selTool === 'lasso' && <Lasso size={22} />}
-            {selTool === 'wand' && <Wand size={22} />}
-            {selTool === 'move' && <Move size={22} />}
-            <span>工具</span>
-          </button>
-          <div className="sel-sep" />
-          {(['new', 'add', 'sub', 'intersect'] as SelMode[]).map((m) => (
-            <button
-              key={m}
-              className={`sel-chip ${selMode === m ? 'on' : ''}`}
-              onClick={() => setSelMode(m)}
-            >
-              {{ new: '新建', add: '增加', sub: '减去', intersect: '交集' }[m]}
+          <div className="mode-wrap">
+            <button ref={toolBtnRef} className="sel-mode" onClick={() => setToolMenu((v) => !v)} aria-label="选区工具">
+              {selTool === 'rect' && <RectIcon size={17} />}
+              {selTool === 'ellipse' && <Ellipse size={17} />}
+              {selTool === 'lasso' && <Lasso size={17} />}
+              {selTool === 'wand' && <Wand size={17} />}
+              {selTool === 'move' && <Move size={17} />}
+              <span>{{ rect: '矩形', ellipse: '椭圆', lasso: '套索', wand: '魔棒', move: '移动' }[selTool]}</span>
+              <span className={`mode-chev ${toolMenu ? 'open' : ''}`}>›</span>
             </button>
-          ))}
+            <DropMenu anchorRef={toolBtnRef} open={toolMenu} onClose={() => setToolMenu(false)}>
+                  {([
+                    ['rect', '矩形', <RectIcon size={16} key="r" />],
+                    ['ellipse', '椭圆', <Ellipse size={16} key="e" />],
+                    ['lasso', '套索', <Lasso size={16} key="l" />],
+                    ['wand', '魔棒', <Wand size={16} key="w" />],
+                    ['move', '移动', <Move size={16} key="m" />],
+                  ] as [SelectTool, string, ReactNode][]).map(([id, label, icon]) => (
+                    <button
+                      key={id}
+                      className={selTool === id ? 'on' : ''}
+                      onClick={() => {
+                        setSelTool(id);
+                        setTool('select');
+                        setToolMenu(false);
+                      }}
+                    >
+                      <span className="mm-left">{icon}{label}</span>
+                      {selTool === id && <Check size={15} />}
+                    </button>
+                  ))}
+                  <div className="mode-divider" />
+                  <button
+                    onClick={() => {
+                      setSelMask(new Uint8Array(width * height).fill(1));
+                      setToolMenu(false);
+                    }}
+                  >
+                    全选
+                  </button>
+                  <button
+                    onClick={() => {
+                      selInvert();
+                      setToolMenu(false);
+                    }}
+                  >
+                    反选
+                  </button>
+            </DropMenu>
+          </div>
+          <div className="sel-sep" />
+          <div className="mode-wrap">
+            <button
+              ref={modeBtnRef}
+              className="sel-mode"
+              onClick={() => setModeMenu((v) => !v)}
+              aria-label="选区模式"
+            >
+              {{ new: '新建', add: '增加', sub: '减去', intersect: '交集' }[selMode]}
+              <span className={`mode-chev ${modeMenu ? 'open' : ''}`}>›</span>
+            </button>
+            <DropMenu anchorRef={modeBtnRef} open={modeMenu} onClose={() => setModeMenu(false)}>
+                  {(['new', 'add', 'sub', 'intersect'] as SelMode[]).map((m) => (
+                    <button
+                      key={m}
+                      className={selMode === m ? 'on' : ''}
+                      onClick={() => {
+                        setSelMode(m);
+                        setModeMenu(false);
+                      }}
+                    >
+                      {{ new: '新建', add: '增加', sub: '减去', intersect: '交集' }[m]}
+                      {selMode === m && <Check size={15} />}
+                    </button>
+                  ))}
+            </DropMenu>
+          </div>
           {floating ? (
             <>
               <div className="sel-sep" />
@@ -1365,16 +1452,11 @@ export function EditorScreen() {
                 <FlipV size={22} />
                 <span>垂直翻转</span>
               </button>
-              <div className="sel-sep" />
-              <button className="sel-btn" onClick={selClear}>
-                <Close size={22} />
-                <span>取消</span>
-              </button>
             </>
           ) : null}
         </div>
       ) : (
-        <div className="param-row">
+        <div className={`param-row ${tool === 'shade' ? 'shade' : ''}`}>
 
 
         {(tool === 'pencil' || tool === 'eraser') && (
@@ -1432,46 +1514,56 @@ export function EditorScreen() {
         )}
         {tool === 'dropper' && <span className="muted">取样 1×1 · 合成结果</span>}
         {tool === 'shade' && (
-          <>
-            <span>尺寸</span>
-            <input
-              type="range"
-              min={1}
-              max={50}
-              value={brush}
-              onChange={(e) => setBrush(Number(e.target.value))}
-            />
-            <input
-              type="number"
-              className="num-input"
-              min={1}
-              max={50}
-              value={brush}
-              onChange={(e) => {
-                const v = Number(e.target.value);
-                setBrush(Math.min(50, Math.max(1, Number.isFinite(v) ? Math.round(v) : 1)));
-              }}
-              aria-label="笔刷尺寸"
-            />
-            <span>明度</span>
-            <input
-              type="range"
-              min={-100}
-              max={100}
-              value={deltaL}
-              onChange={(e) => setDeltaL(Number(e.target.value))}
-            />
-            <span className="val">{deltaL}</span>
-            <span>饱和</span>
-            <input
-              type="range"
-              min={-100}
-              max={100}
-              value={deltaS}
-              onChange={(e) => setDeltaS(Number(e.target.value))}
-            />
-            <span className="val">{deltaS}</span>
-          </>
+          <div className="shade-params">
+            <div className="shade-line">
+              <span className="plabel">尺寸</span>
+              <input
+                type="range"
+                min={1}
+                max={50}
+                value={brush}
+                onChange={(e) => setBrush(Number(e.target.value))}
+                aria-label="明度笔刷尺寸"
+              />
+              <input
+                type="number"
+                className="num-input"
+                min={1}
+                max={50}
+                value={brush}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  setBrush(Math.min(50, Math.max(1, Number.isFinite(v) ? Math.round(v) : 1)));
+                }}
+                aria-label="笔刷尺寸"
+              />
+              <span className="pval">px</span>
+            </div>
+            <div className="shade-line">
+              <span className="plabel">明度</span>
+              <input
+                type="range"
+                min={-100}
+                max={100}
+                value={deltaL}
+                onChange={(e) => setDeltaL(Number(e.target.value))}
+                aria-label="明度增量"
+              />
+              <span className="pval">{deltaL}</span>
+            </div>
+            <div className="shade-line">
+              <span className="plabel">饱和</span>
+              <input
+                type="range"
+                min={-100}
+                max={100}
+                value={deltaS}
+                onChange={(e) => setDeltaS(Number(e.target.value))}
+                aria-label="饱和度增量"
+              />
+              <span className="pval">{deltaS}</span>
+            </div>
+          </div>
         )}
         </div>
       )}
@@ -1631,19 +1723,6 @@ export function EditorScreen() {
           }}
         />
       )}
-      {sheet === 'selection' && (
-        <SelectionSheet
-          tool={selTool}
-          onPick={(t) => {
-            setSelTool(t);
-            setTool('select');
-            setSheet(null);
-          }}
-          onSelectAll={() => setSelMask(new Uint8Array(width * height).fill(1))}
-          onInvert={selInvert}
-        />
-      )}
-
       {sheet === 'overlay' && (
         <OverlaySheet
           overlay={overlay}

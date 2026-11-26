@@ -6,7 +6,7 @@ const CX = SIZE / 2;
 const CY = SIZE / 2;
 const OUTER = 105;
 const INNER = 79;
-const SQ = 116;
+const SQ = 104;
 const SQ0 = CX - SQ / 2;
 
 const hsv = converter('hsv');
@@ -115,9 +115,12 @@ export function ColorWheel({ color, onChange }: Props) {
     const dx = x - CX;
     const dy = y - CY;
     const dist = Math.hypot(dx, dy);
-    const inSquare = x >= SQ0 && x <= SQ0 + SQ && y >= SQ0 && y <= SQ0 + SQ;
+    // 方块四周留 10px 缓冲，避免贴边取色时误触色相环
+    const pad = 10;
+    const inSquarePad =
+      x >= SQ0 - pad && x <= SQ0 + SQ + pad && y >= SQ0 - pad && y <= SQ0 + SQ + pad;
 
-    if (!inSquare && dist > INNER - 8) {
+    if (!inSquarePad && dist > INNER) {
       const deg = ((Math.atan2(dy, dx) * 180) / Math.PI + 360) % 360;
       onChange(hueToHex(deg, sat, val));
       return;

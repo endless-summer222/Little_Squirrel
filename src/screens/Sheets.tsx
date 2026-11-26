@@ -1056,12 +1056,27 @@ export function OverlaySheet({
           hidden
           onChange={(e) => {
             const f = e.target.files?.[0];
-            if (f) {
-              const reader = new FileReader();
-              reader.onload = () => onImport(String(reader.result));
-              reader.readAsDataURL(f);
-            }
             e.target.value = '';
+            if (!f) return;
+            const url = URL.createObjectURL(f);
+            const img = new Image();
+            img.onload = () => {
+              const max = 1024;
+              const scale = Math.min(1, max / Math.max(img.width, img.height));
+              const w = Math.max(1, Math.round(img.width * scale));
+              const h = Math.max(1, Math.round(img.height * scale));
+              const cv = document.createElement('canvas');
+              cv.width = w;
+              cv.height = h;
+              const ctx = cv.getContext('2d');
+              if (ctx) {
+                ctx.drawImage(img, 0, 0, w, h);
+                onImport(cv.toDataURL('image/png'));
+              }
+              URL.revokeObjectURL(url);
+            };
+            img.onerror = () => URL.revokeObjectURL(url);
+            img.src = url;
           }}
         />
       </label>

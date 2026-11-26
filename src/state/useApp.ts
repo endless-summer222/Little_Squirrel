@@ -69,8 +69,8 @@ const today = new Date().toISOString().slice(0, 10);
 
 const initialProjects: Project[] = [
   {
-    id: 'p1',
-    name: '副本-副本-副本',
+    id: 'sample-1',
+    name: '示例 01',
     kind: 'file',
     width: 32,
     height: 32,
@@ -78,8 +78,8 @@ const initialProjects: Project[] = [
     folderId: null,
   },
   {
-    id: 'p2',
-    name: '副本-副本',
+    id: 'sample-2',
+    name: '示例 02',
     kind: 'file',
     width: 64,
     height: 64,
@@ -87,21 +87,12 @@ const initialProjects: Project[] = [
     folderId: null,
   },
   {
-    id: 'p3',
-    name: 'Hero_Body_01',
+    id: 'sample-3',
+    name: '示例 03',
     kind: 'file',
     width: 128,
     height: 128,
-    updatedAt: '2026-11-24',
-    folderId: null,
-  },
-  {
-    id: 'p4',
-    name: 'Rock_01',
-    kind: 'file',
-    width: 64,
-    height: 64,
-    updatedAt: '2026-11-23',
+    updatedAt: today,
     folderId: null,
   },
 ];
@@ -120,6 +111,10 @@ function normalize(p: Project & { size?: number }): Project {
   const width = p.width ?? p.size ?? 64;
   const height = p.height ?? p.size ?? 64;
   const base: Project = { ...p, width, height };
+  // 防止超大参考图导致启动解码 OOM：历史数据里超过 4MB 的底图直接丢弃
+  if (base.overlay && base.overlay.dataUrl.length > 1_500_000) {
+    base.overlay = undefined;
+  }
   const layers =
     p.layers && p.layers.length > 0
       ? p.layers
@@ -152,7 +147,12 @@ export const useApp = create<AppState>((set, get) => ({
 
     hydratePromise = (async () => {
       try {
-        const rows = await loadProjects();
+        const rows = await Promise.race([
+          loadProjects(),
+          new Promise<never>((_, reject) =>
+            window.setTimeout(() => reject(new Error('storage timeout')), 4000),
+          ),
+        ]);
         if (rows.length === 0) {
           await saveProjects(initialProjects);
           set({ projects: initialProjects, ready: true });

@@ -1,3 +1,5 @@
+import { converter } from 'culori';
+
 export interface RGBA {
   r: number;
   g: number;
@@ -202,4 +204,29 @@ export function createDemoTexture(size: number, seedText: string): Uint8ClampedA
   }
 
   return buf;
+}
+
+
+const toHslA = converter('hsl');
+const toHsvA = converter('hsv');
+const toRgbA = converter('rgb');
+
+/** 明度用 HSL l，饱和度用 HSV s（加性），避免灰色被染色、也避免乘性调整太弱 */
+export function adjustPixel(c: RGBA, dL: number, dS: number): RGBA {
+  const base = toHslA({ mode: 'rgb', r: c.r / 255, g: c.g / 255, b: c.b / 255 });
+  if (!base) return c;
+  const l = Math.min(1, Math.max(0, (base.l ?? 0) + dL / 100));
+  const step1 = toRgbA({ mode: 'hsl', h: base.h ?? 0, s: base.s ?? 0, l });
+  if (!step1) return c;
+  const hsv = toHsvA({ mode: 'rgb', r: step1.r ?? 0, g: step1.g ?? 0, b: step1.b ?? 0 });
+  let sat = hsv?.s ?? 0;
+  if (sat > 0.001 && dS !== 0) sat = Math.min(1, Math.max(0, sat + dS / 100));
+  const out = toRgbA({ mode: 'hsv', h: hsv?.h ?? 0, s: sat, v: hsv?.v ?? 0 });
+  if (!out) return c;
+  return {
+    r: Math.round((out.r ?? 0) * 255),
+    g: Math.round((out.g ?? 0) * 255),
+    b: Math.round((out.b ?? 0) * 255),
+    a: c.a,
+  };
 }
