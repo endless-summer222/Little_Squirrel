@@ -1267,3 +1267,71 @@ input.hue-track::-webkit-slider-thumb {
   pointer-events: none;
   z-index: 5;
 }
+
+.settings-page {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: #141416;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.settings-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: calc(10px + env(safe-area-inset-top)) 10px 10px;
+}
+
+.settings-top h1 {
+  flex: 1;
+  text-align: center;
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.settings-body {
+  padding: 0 16px 40px;
+}
+
+.settings-group {
+  margin-top: 18px;
+}
+
+.settings-group h2 {
+  font-size: 12px;
+  font-weight: 500;
+  color: #8d8d93;
+  margin: 0 0 8px 4px;
+}
+
+.settings-card {
+  background: #232326;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 48px;
+  padding: 0 14px;
+  border-bottom: 1px solid #2f2f34;
+  font-size: 14px;
+}
+
+.settings-row:last-child {
+  border-bottom: 0;
+}
+
+.settings-foot {
+  margin: 28px 0 0;
+  text-align: center;
+  color: #6f6f75;
+  font-size: 12px;
+  line-height: 1.7;
+}

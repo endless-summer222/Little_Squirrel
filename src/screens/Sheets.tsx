@@ -214,7 +214,7 @@ export function SettingsSheet() {
     ['网格默认显示', '开'],
     ['历史内存上限', '96 MB'],
     ['语言', '简体中文'],
-    ['版本', '0.2.0 (M0)'],
+    ['版本', '0.10_preview'],
   ];
   return (
     <Sheet title="设置">
@@ -231,7 +231,7 @@ export function SettingsSheet() {
 export function HelpSheet() {
   const items: [string, string][] = [
     ['单指拖动', '绘制'],
-    ['双指捏合', '缩放 0.25× ~ 64×'],
+    ['双指捏合', '缩放 0.1× ~ 64×'],
     ['双指拖动', '平移画布'],
     ['双指轻点', '撤销'],
     ['三指轻点', '重做'],
@@ -248,9 +248,6 @@ export function HelpSheet() {
           </li>
         ))}
       </ul>
-      <p className="muted" style={{ margin: '4px 0 0' }}>
-        当前为 M0 演示版：画笔、橡皮、油漆桶、取色器可用。
-      </p>
     </Sheet>
   );
 }

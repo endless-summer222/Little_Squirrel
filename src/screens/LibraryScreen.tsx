@@ -18,9 +18,9 @@ import {
   NewFolderSheet,
   NewProjectSheet,
   RenameSheet,
-  SettingsSheet,
   Sheet,
 } from './Sheets';
+import { SettingsScreen } from './SettingsScreen';
 
 type SortKey = 'date' | 'name' | 'size';
 
@@ -332,7 +332,7 @@ export function LibraryScreen() {
 
       {sheet === 'new' && <NewProjectSheet folderId={folderId} />}
       {sheet === 'newFolder' && <NewFolderSheet folderId={folderId} />}
-      {sheet === 'settings' && <SettingsSheet />}
+      {sheet === 'settings' && <SettingsScreen onBack={() => setSheet(null)} />}
       {sheet === 'more' && (
         <Sheet title="更多">
           <div className="muted" style={{ marginBottom: 6 }}>
