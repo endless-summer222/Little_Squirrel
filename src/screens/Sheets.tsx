@@ -48,15 +48,21 @@ const SIZES = [32, 64, 128, 256, 512, 1024];
 
 export function NewProjectSheet({ folderId }: { folderId: string | null }) {
   const createProject = useApp((s) => s.createProject);
-  const [width, setWidth] = useState(64);
-  const [height, setHeight] = useState(64);
+  const [width, setWidth] = useState('64');
+  const [height, setHeight] = useState('64');
   const [name, setName] = useState('');
 
-  const clamp = (v: number) => Math.min(1024, Math.max(1, Math.round(v) || 1));
-  const preset = (n: number) => {
-    setWidth(n);
-    setHeight(n);
+  const clamp = (v: string) => {
+    const n = parseInt(v, 10);
+    if (!Number.isFinite(n)) return '';
+    return String(Math.min(1024, Math.max(1, n)));
   };
+  const preset = (n: number) => {
+    setWidth(String(n));
+    setHeight(String(n));
+  };
+  const numW = parseInt(width, 10) || 64;
+  const numH = parseInt(height, 10) || 64;
 
   return (
     <Sheet title="新建贴图">
@@ -67,7 +73,7 @@ export function NewProjectSheet({ folderId }: { folderId: string | null }) {
         {SIZES.map((s) => (
           <button
             key={s}
-            className={`opt ${width === s && height === s ? 'sel' : ''}`}
+            className={`opt ${numW === s && numH === s ? 'sel' : ''}`}
             onClick={() => preset(s)}
           >
             {s} × {s}
@@ -83,11 +89,13 @@ export function NewProjectSheet({ folderId }: { folderId: string | null }) {
           <span>宽</span>
           <input
             type="number"
+            inputMode="numeric"
             min={1}
             max={1024}
+            placeholder="宽"
             value={width}
-            onChange={(e) => setWidth(Number(e.target.value))}
-            onBlur={(e) => setWidth(clamp(Number(e.target.value)))}
+            onChange={(e) => setWidth(e.target.value.replace(/[^0-9]/g, '').slice(0, 4))}
+            onBlur={() => setWidth(clamp(width))}
             aria-label="画布宽度"
           />
         </label>
@@ -96,11 +104,13 @@ export function NewProjectSheet({ folderId }: { folderId: string | null }) {
           <span>高</span>
           <input
             type="number"
+            inputMode="numeric"
             min={1}
             max={1024}
+            placeholder="高"
             value={height}
-            onChange={(e) => setHeight(Number(e.target.value))}
-            onBlur={(e) => setHeight(clamp(Number(e.target.value)))}
+            onChange={(e) => setHeight(e.target.value.replace(/[^0-9]/g, '').slice(0, 4))}
+            onBlur={() => setHeight(clamp(height))}
             aria-label="画布高度"
           />
         </label>
@@ -116,7 +126,12 @@ export function NewProjectSheet({ folderId }: { folderId: string | null }) {
         <button
           className="primary"
           style={{ height: 40 }}
-          onClick={() => createProject(clamp(width), clamp(height), name, folderId)}
+          onClick={() => createProject(
+            parseInt(clamp(width), 10) || 64,
+            parseInt(clamp(height), 10) || 64,
+            name,
+            folderId,
+          )}
         >
           创建
         </button>
@@ -272,13 +287,18 @@ export function ColorSheet({
   palette,
   onChange,
   onAlpha,
+  onRemove,
+  onClear,
 }: {
   color: string;
   alpha: number;
   palette: string[];
   onChange: (hex: string) => void;
   onAlpha: (a: number) => void;
+  onRemove: (hex: string) => void;
+  onClear: () => void;
 }) {
+  const [manage, setManage] = useState(false);
   const current = hsv(color) ?? { h: 0, s: 0, v: 1 };
   const rgb = parseHex(color);
   const [hexText, setHexText] = useState(color);
@@ -401,30 +421,48 @@ export function ColorSheet({
         <span>
           色板 <span className="muted">{palette.length}/64</span>
         </span>
-        {palette.length === 0 ? (
-          <span className="muted">用画笔蘸一下颜色就会记录</span>
-        ) : (
-          <div className="palette-grid">
-            {palette.map((c) => (
-              <button
-                key={c}
-                onClick={() => {
-                  onChange(c);
-                  setHexText(c);
-                }}
-                style={{
-                  width: 28,
-                  height: 28,
-                  borderRadius: 6,
-                  background: c,
-                  border: '1px solid rgba(255,255,255,.14)',
-                }}
-                aria-label={c}
-              />
-            ))}
+        {palette.length > 0 && (
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button className="chipbtn" onClick={() => setManage((v) => !v)}>
+              {manage ? '完成' : '管理'}
+            </button>
+            {manage && (
+              <button className="chipbtn danger" onClick={onClear}>
+                清空
+              </button>
+            )}
           </div>
         )}
       </div>
+      {palette.length === 0 ? (
+        <p className="muted" style={{ margin: '0 0 8px' }}>
+          用画笔蘸一下颜色就会记录
+        </p>
+      ) : (
+        <div className="palette-grid">
+          {palette.map((c) => (
+            <button
+              key={c}
+              onClick={() => {
+                if (manage) {
+                  onRemove(c);
+                  return;
+                }
+                onChange(c);
+                setHexText(c);
+              }}
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 6,
+                background: c,
+                border: '1px solid rgba(255,255,255,.14)',
+              }}
+              aria-label={manage ? `删除 ${c}` : c}
+            />
+          ))}
+        </div>
+      )}
     </Sheet>
   );
 }
@@ -513,6 +551,9 @@ export function LayersSheet({
   onAddGroup,
   onToggleGroup,
   onAssignGroup,
+  onRename,
+  onClearLayer,
+  onAlphaLock,
 }: {
   layers: Layer[];
   groups: LayerGroup[];
@@ -529,7 +570,13 @@ export function LayersSheet({
   onAddGroup: () => void;
   onToggleGroup: (id: string) => void;
   onAssignGroup: (layerId: string, groupId: string | null) => void;
+  onRename: (id: string, name: string) => void;
+  onClearLayer: () => void;
+  onAlphaLock: (id: string) => void;
 }) {
+  const active = layers.find((l) => l.id === activeId) ?? layers[layers.length - 1];
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState(active?.name ?? '');
   const [drag, setDrag] = useState<{
     layerId: string;
     over: number;
@@ -537,7 +584,6 @@ export function LayersSheet({
   } | null>(null);
   const rowRefs = useRef<(HTMLDivElement | null)[]>([]);
   const rectsRef = useRef<{ top: number; height: number }[]>([]);
-  const active = layers.find((l) => l.id === activeId) ?? layers[layers.length - 1];
 
   const rows: Row[] = [];
   const seen = new Set<string>();
@@ -693,6 +739,25 @@ export function LayersSheet({
         </select>
       </div>
 
+      {renaming && active && (
+        <div className="row">
+          <input
+            className="name-input"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            aria-label="图层名称"
+          />
+          <button
+            className="chipbtn on"
+            onClick={() => {
+              onRename(active.id, draft.trim() || active.name);
+              setRenaming(false);
+            }}
+          >
+            确定
+          </button>
+        </div>
+      )}
       <div className="row" style={{ borderBottom: 0, flexWrap: 'wrap' }}>
         <button className="chipbtn" onClick={onAdd}>
           ＋ 新建
@@ -705,6 +770,24 @@ export function LayersSheet({
         </button>
         <button className="chipbtn" onClick={onAddGroup}>
           ＋ 文件夹
+        </button>
+        <button
+          className="chipbtn"
+          onClick={() => {
+            setDraft(active?.name ?? '');
+            setRenaming(true);
+          }}
+        >
+          重命名
+        </button>
+        <button className="chipbtn" onClick={onClearLayer}>
+          清空
+        </button>
+        <button
+          className={`chipbtn ${active?.alphaLock ? 'on' : ''}`}
+          onClick={() => active && onAlphaLock(active.id)}
+        >
+          透明锁
         </button>
         <button className="chipbtn danger" onClick={onDelete}>
           删除
@@ -814,6 +897,94 @@ export function SelectionBadge() {
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: '#7CB342' }}>
       <Check size={14} /> 选区
     </span>
+  );
+}
+
+
+const GRID_COLORS = ['#FFFFFF', '#9DFFEB', '#000000', '#94A3B8', '#F472B6'];
+
+export function GridSheet({
+  color,
+  onColor,
+  on,
+  onToggle,
+  step,
+  onStep,
+}: {
+  color: string;
+  onColor: (c: string) => void;
+  on: boolean;
+  onToggle: () => void;
+  step: number;
+  onStep: (n: number) => void;
+}) {
+  return (
+    <Sheet title="网格">
+      <div className="row">
+        <span>网络视图（常亮）</span>
+        <button className="chipbtn" onClick={onToggle} style={on ? { background: '#9DFFEB', color: '#08211c' } : undefined}>
+          {on ? '已开启' : '已关闭'}
+        </button>
+      </div>
+      <div className="muted" style={{ margin: '12px 0 6px' }}>网格尺寸</div>
+      <div className="opt-grid">
+        {[1, 2, 4, 8, 16, 32].map((n) => (
+          <button
+            key={n}
+            className={`opt ${step === n ? 'sel' : ''}`}
+            onClick={() => onStep(n)}
+          >
+            {n} × {n}
+          </button>
+        ))}
+      </div>
+      <div className="muted" style={{ margin: '10px 0 6px' }}>分隔线颜色</div>
+      <div className="palette-grid">
+        {GRID_COLORS.map((c) => (
+          <button
+            key={c}
+            className={`grid-swatch ${color.toUpperCase() === c ? 'sel' : ''}`}
+            style={{ background: c }}
+            aria-label={c}
+            onClick={() => onColor(c)}
+          />
+        ))}
+        <label className="grid-swatch custom" aria-label="自定义颜色">
+          <input
+            type="color"
+            value={color}
+            onChange={(e) => onColor(e.target.value.toUpperCase())}
+          />
+        </label>
+      </div>
+      <p className="muted" style={{ margin: '12px 0 0' }}>
+        网络视图在任何缩放下都显示，颜色固定青色、比像素分隔线略粗。
+      </p>
+    </Sheet>
+  );
+}
+
+export function ExportSheet({
+  onExport,
+  lastPath,
+}: {
+  onExport: (scale: number) => void;
+  lastPath?: string;
+}) {
+  return (
+    <Sheet title="导出 PNG">
+      <div className="row" style={{ borderBottom: 0 }}>
+        <button className="primary" style={{ flex: 1, marginRight: 8 }} onClick={() => onExport(1)}>
+          导出 1×
+        </button>
+        <button className="primary" style={{ flex: 1 }} onClick={() => onExport(4)}>
+          导出 4×
+        </button>
+      </div>
+      <p className="muted" style={{ margin: '10px 0 0' }}>
+        {lastPath ? `最近导出：${lastPath}` : '导出到 Documents/PixelUV/（Android），文件名与工程同名。'}
+      </p>
+    </Sheet>
   );
 }
 

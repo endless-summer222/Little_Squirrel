@@ -291,6 +291,21 @@ export const FlipV = (p: IconProps) => (
   </Svg>
 );
 
+
+export const Grid = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="4" y="4" width="16" height="16" rx="2" />
+    <path d="M4 9.3h16M4 14.6h16M9.3 4v16M14.6 4v16" />
+  </Svg>
+);
+
+export const Share = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M12 15V4M8 7l4-3 4 3" />
+    <path d="M5 13v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5" />
+  </Svg>
+);
+
 export const Eye = (p: IconProps) => (
   <Svg {...p}>
     <path d="M2.8 12S6 6.5 12 6.5 21.2 12 21.2 12 18 17.5 12 17.5 2.8 12 2.8 12Z" />

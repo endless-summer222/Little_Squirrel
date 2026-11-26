@@ -22,6 +22,8 @@ export type SheetKind =
   | 'selection'
   | 'effects'
   | 'overlay'
+  | 'grid'
+  | 'export'
   | null;
 
 interface AppState {
@@ -56,6 +58,7 @@ interface AppState {
     groups?: LayerGroup[],
   ) => void;
   updateProjectOverlay: (id: string, overlay: Overlay | undefined) => void;
+  importFullProject: (project: Project) => void;
   updateProjectPalette: (id: string, palette: string[]) => void;
   deleteProject: (id: string) => void;
   setSheet: (sheet: SheetKind) => void;
@@ -270,6 +273,11 @@ export const useApp = create<AppState>((set, get) => ({
       }),
     }));
     if (updated) persist(updated);
+  },
+
+  importFullProject: (project) => {
+    set((s) => ({ projects: [project, ...s.projects.filter((p) => p.id !== project.id)] }));
+    persist(project);
   },
 
   updateProjectOverlay: (id, overlay) => {

@@ -1,7 +1,8 @@
 ﻿import { useMemo, useRef, useState } from 'react';
 import { createDemoTexture } from '../core/pixels';
 import { compositeLayers, ensureLayers } from '../core/layers';
-import { exportProjectPng } from '../core/export';
+import { saveProjectPng } from '../core/export';
+import { parseProject, saveProjectFile } from '../core/projectFile';
 import { useApp, type Project } from '../state/useApp';
 import { TextureView } from '../components/TextureView';
 import {
@@ -158,6 +159,8 @@ export function LibraryScreen() {
   const [renameText, setRenameText] = useState('');
 
   const importRef = useRef<HTMLInputElement>(null);
+  const projectRef = useRef<HTMLInputElement>(null);
+  const importFullProject = useApp((s) => s.importFullProject);
   const folder = projects.find((p) => p.id === folderId) ?? null;
   const menuProject = projects.find((p) => p.id === menuId) ?? null;
 
@@ -210,8 +213,8 @@ export function LibraryScreen() {
   const doExport = async (project: Project, scale: number) => {
     setMenuId(null);
     try {
-      await exportProjectPng(project, scale);
-      showToast(`已导出 ${project.name}${scale === 1 ? '' : ` @${scale}x`}.png`);
+      const path = await saveProjectPng(project, scale);
+      showToast(`已导出：${path}`);
     } catch {
       showToast('导出失败');
     }
@@ -299,6 +302,24 @@ export function LibraryScreen() {
       </nav>
 
       <input
+        ref={projectRef}
+        type="file"
+        accept=".uvproj,application/json"
+        style={{ display: 'none' }}
+        onChange={async (e) => {
+          const f = e.target.files?.[0];
+          if (!f) return;
+          try {
+            const text = await f.text();
+            importFullProject(parseProject(text));
+            showToast('已导入工程');
+          } catch {
+            showToast('工程文件解析失败');
+          }
+          e.target.value = '';
+        }}
+      />
+      <input
         ref={importRef}
         type="file"
         accept="image/png,image/jpeg,image/webp"
@@ -344,6 +365,15 @@ export function LibraryScreen() {
             >
               导入图片
             </button>
+            <button
+              className="menu-row"
+              onClick={() => {
+                setSheet(null);
+                projectRef.current?.click();
+              }}
+            >
+              导入工程（.uvproj）
+            </button>
             <button className="menu-row" onClick={() => setSheet('new')}>
               新建文件
             </button>
@@ -374,6 +404,15 @@ export function LibraryScreen() {
                 </button>
                 <button className="menu-row" onClick={() => void doExport(menuProject, 4)}>
                   导出 PNG（4× 最近邻）
+                </button>
+                <button
+                  className="menu-row"
+                  onClick={async () => {
+                    const path = await saveProjectFile(menuProject);
+                    showToast(`已导出工程：${path}`);
+                  }}
+                >
+                  导出工程（.uvproj）
                 </button>
               </>
             )}

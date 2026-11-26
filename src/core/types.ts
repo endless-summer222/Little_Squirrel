@@ -26,6 +26,7 @@ export interface Layer {
   opacity: number; // 0..1
   blend: BlendMode;
   pixels: Uint8ClampedArray;
+  alphaLock?: boolean;
   groupId?: string | null;
 }
 

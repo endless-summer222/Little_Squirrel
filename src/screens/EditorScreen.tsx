@@ -14,6 +14,7 @@ import {
   Ellipse,
   Expand,
   FlipH,
+  Grid,
   FlipV,
   Lasso,
   Move,
@@ -33,10 +34,11 @@ import {
   Overlay,
   Pencil,
   Redo,
+  Share,
   Sparkles,
   Undo,
 } from '../components/icons';
-import { cloneBuffer, parseHex } from '../core/pixels';
+import { cloneBuffer, parseHex, toHex } from '../core/pixels';
 import { converter } from 'culori';
 
 const toHsl = converter('hsl');
@@ -69,10 +71,13 @@ import {
   ColorSheet,
   EffectsSheet,
   HelpSheet,
+  ExportSheet,
+  GridSheet,
   LayersSheet,
   OverlaySheet,
   SelectionSheet,
 } from './Sheets';
+import { saveProjectPng } from '../core/export';
 
 const DEFAULT_SWATCHES = ['#1F2937', '#111827', '#0B1220', '#0F172A', '#4B5563', '#94A3B8'];
 const MAX_PALETTE = 64;
@@ -105,6 +110,7 @@ type Snap = LayerSnap | DocSnap;
 
 interface Floating {
   pixels: Uint8ClampedArray;
+  origPixels: Uint8ClampedArray;
   mask: Uint8Array;
   origMask: Uint8Array;
   x: number;
@@ -158,6 +164,8 @@ export function EditorScreen() {
   layersRef.current = layers;
 
   const [tool, setTool] = useState<ToolId>('pencil');
+  const [hand, setHand] = useState(false);
+  const handTimer = useRef(0);
   const [brush, setBrush] = useState(1);
   const [zoom, setZoom] = useState(() => {
     const availW = Math.min(window.innerWidth, 430) - 32;
@@ -167,6 +175,8 @@ export function EditorScreen() {
   });
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const centered = useRef(false);
+  const [vp, setVp] = useState({ w: 0, h: 0 });
+  const strokeActive = useRef(false);
   const [version, setVersion] = useState(0);
   const [pixelPerfect, setPixelPerfect] = useState(true);
   const [threshold, setThreshold] = useState(0);
@@ -175,6 +185,28 @@ export function EditorScreen() {
   const [selPath, setSelPath] = useState<Path2D | null>(null);
   const [selTool, setSelTool] = useState<SelectTool>('rect');
   const [selMode, setSelMode] = useState<SelMode>('new');
+  const [gridColor, setGridColor] = useState(() =>
+    typeof localStorage === 'undefined' ? '#FFFFFF' : localStorage.getItem('pixeluv.gridColor') ?? '#FFFFFF',
+  );
+  const [gridOn, setGridOn] = useState(() =>
+    typeof localStorage === 'undefined' ? false : localStorage.getItem('pixeluv.gridOn') === '1',
+  );
+  const [gridStep, setGridStep] = useState(() => {
+    const v = typeof localStorage === 'undefined' ? 1 : Number(localStorage.getItem('pixeluv.gridStep'));
+    return [1, 2, 4, 8, 16, 32].includes(v) ? v : 1;
+  });
+  const [lastExport, setLastExport] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('pixeluv.gridColor', gridColor);
+      localStorage.setItem('pixeluv.gridOn', gridOn ? '1' : '0');
+      localStorage.setItem('pixeluv.gridStep', String(gridStep));
+    } catch {
+      // ignore
+    }
+  }, [gridColor, gridOn, gridStep]);
+
   const [floating, setFloating] = useState<Floating | null>(null);
   const floatingRef = useRef<Floating | null>(null);
   floatingRef.current = floating;
@@ -199,6 +231,22 @@ export function EditorScreen() {
   const redoRef = useRef<Snap[]>([]);
   const [hist, setHist] = useState({ u: 0, r: 0 });
   const syncHist = () => setHist({ u: undoRef.current.length, r: redoRef.current.length });
+
+  const snapBytes = (snap: Snap): number => {
+    if (snap.kind === 'layer') return snap.pixels.byteLength + 64;
+    return snap.layers.reduce((n, l) => n + l.pixels.byteLength + 128, 0);
+  };
+
+  const trimUndo = () => {
+    const MAX = 100;
+    const LIMIT = 64 * 1024 * 1024;
+    let bytes = undoRef.current.reduce((n, s) => n + snapBytes(s), 0);
+    while (undoRef.current.length > MAX || (bytes > LIMIT && undoRef.current.length > 1)) {
+      const dropped = undoRef.current.shift();
+      if (!dropped) break;
+      bytes -= snapBytes(dropped);
+    }
+  };
 
   const layerCanvas = (layer: Layer) => {
     let c = layerCanvases.current.get(layer.id);
@@ -330,7 +378,7 @@ export function EditorScreen() {
 
   const pushDoc = () => {
     undoRef.current.push({ kind: 'doc', layers: cloneLayers(layers), activeId });
-    if (undoRef.current.length > 30) undoRef.current.shift();
+    trimUndo();
     redoRef.current = [];
     syncHist();
   };
@@ -363,6 +411,11 @@ export function EditorScreen() {
   };
 
   const undo = () => {
+    if (floatingRef.current) {
+      setFloating(null);
+      floatingRef.current = null;
+      syncFloatCanvas(null);
+    }
     const snap = undoRef.current.pop();
     if (!snap) return;
     redoRef.current.push(currentSnap(snap));
@@ -371,6 +424,11 @@ export function EditorScreen() {
   };
 
   const redo = () => {
+    if (floatingRef.current) {
+      setFloating(null);
+      floatingRef.current = null;
+      syncFloatCanvas(null);
+    }
     const snap = redoRef.current.pop();
     if (!snap) return;
     undoRef.current.push(currentSnap(snap));
@@ -380,15 +438,28 @@ export function EditorScreen() {
 
   const beginStroke = () => {
     if (!active || active.locked) return;
+    strokeActive.current = true;
+    lastStrokeAt.current = performance.now();
     undoRef.current.push({
       kind: 'layer',
       id: active.id,
       pixels: cloneBuffer(active.pixels),
     });
-    if (undoRef.current.length > 30) undoRef.current.shift();
+    trimUndo();
     redoRef.current = [];
     syncHist();
     if (tool === 'pencil' || tool === 'bucket') rememberColor(color);
+  };
+
+  const removePalette = (hex: string) => {
+    const next = paletteRef.current.filter((c) => c !== hex);
+    setPalette(next);
+    if (project) updateProjectPalette(project.id, next);
+  };
+
+  const clearPalette = () => {
+    setPalette([]);
+    if (project) updateProjectPalette(project.id, []);
   };
 
   const rememberColor = (hex: string) => {
@@ -424,6 +495,20 @@ export function EditorScreen() {
     showToast('已应用噪点');
   };
 
+  useEffect(() => {
+    if (tool !== 'select' && floatingRef.current) confirmFloating();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tool]);
+
+  useEffect(() => {
+    if (!project) return;
+    const t = window.setTimeout(() => {
+      updateProjectLayers(project.id, layers, activeId, groups);
+    }, 1200);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layers, activeId, groups]);
+
   const saveAndClose = () => {
     if (project) updateProjectLayers(project.id, layers, active.id, groups);
     closeProject();
@@ -431,6 +516,25 @@ export function EditorScreen() {
   };
 
   const selectLayer = (id: string) => setActiveId(id);
+
+  const toggleAlphaLock = (id: string) => {
+    const next = layers.map((l) => (l.id === id ? { ...l, alphaLock: !l.alphaLock } : l));
+    setLayers(next);
+    rebuild(next);
+  };
+
+  const renameLayer = (id: string, name: string) => {
+    const next = layers.map((l) => (l.id === id ? { ...l, name } : l));
+    setLayers(next);
+    rebuild(next);
+  };
+
+  const clearLayer = () => {
+    if (!active) return;
+    pushLayerSnap();
+    active.pixels.fill(0);
+    rebuild(layers);
+  };
 
   const reorderLayers = (from: number, to: number) => {
     if (from === to) return;
@@ -533,6 +637,7 @@ export function EditorScreen() {
   };
 
   const handleSelectShape = (shape: SelectShape) => {
+    if (floatingRef.current) confirmFloating();
     if (!active) return;
     let next: Uint8Array;
     if (shape.kind === 'rect') next = rectMask(width, height, shape.rect);
@@ -562,6 +667,30 @@ export function EditorScreen() {
         out[di + 1] = active.pixels[si + 1];
         out[di + 2] = active.pixels[si + 2];
         out[di + 3] = active.pixels[si + 3];
+      }
+    }
+    return out;
+  };
+
+  const extractMasked = (
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    mask: Uint8Array,
+  ) => {
+    const out = extractRect(x, y, w, h);
+    for (let dy = 0; dy < h; dy += 1) {
+      for (let dx = 0; dx < w; dx += 1) {
+        const gx = x + dx;
+        const gy = y + dy;
+        if (gx < 0 || gy < 0 || gx >= width || gy >= height) continue;
+        if (mask[gy * width + gx]) continue;
+        const i = (dy * w + dx) * 4;
+        out[i] = 0;
+        out[i + 1] = 0;
+        out[i + 2] = 0;
+        out[i + 3] = 0;
       }
     }
     return out;
@@ -601,7 +730,7 @@ export function EditorScreen() {
   const pushLayerSnap = () => {
     if (!active) return;
     undoRef.current.push({ kind: 'layer', id: active.id, pixels: cloneBuffer(active.pixels) });
-    if (undoRef.current.length > 30) undoRef.current.shift();
+    trimUndo();
     redoRef.current = [];
     syncHist();
   };
@@ -609,6 +738,7 @@ export function EditorScreen() {
   const onMoveStart = () => {
     if (!active || !selection) return;
     if (floatingRef.current) {
+      moveOrigMask.current = selection.mask.slice();
       moveDelta.current = { x: 0, y: 0 };
       setSelOffset({ x: 0, y: 0 });
       return;
@@ -623,7 +753,7 @@ export function EditorScreen() {
       y: b.y,
       w: b.w,
       h: b.h,
-      pixels: extractRect(b.x, b.y, b.w, b.h),
+      pixels: extractMasked(b.x, b.y, b.w, b.h, selection.mask),
     };
     const base = cloneBuffer(active.pixels);
     clearMaskPixels(base, selection.mask);
@@ -681,7 +811,7 @@ export function EditorScreen() {
   const copySelection = (cut: boolean) => {
     if (!active || !selection) return;
     const b = selection.bounds;
-    const content = { x: b.x, y: b.y, w: b.w, h: b.h, pixels: extractRect(b.x, b.y, b.w, b.h) };
+    const content = { x: b.x, y: b.y, w: b.w, h: b.h, pixels: extractMasked(b.x, b.y, b.w, b.h, selection.mask) };
     setClipboard(content);
     if (cut) {
       pushLayerSnap();
@@ -718,7 +848,7 @@ export function EditorScreen() {
     if (!active || !selection) return;
     pushLayerSnap();
     const b = selection.bounds;
-    const src = extractRect(b.x, b.y, b.w, b.h);
+    const src = extractMasked(b.x, b.y, b.w, b.h, selection.mask);
     const out = new Uint8ClampedArray(src.length);
     for (let y = 0; y < b.h; y += 1) {
       for (let x = 0; x < b.w; x += 1) {
@@ -828,24 +958,25 @@ export function EditorScreen() {
     if (!active || !selection) return;
     pushLayerSnap();
     const b = selection.bounds;
-    const src = extractRect(b.x, b.y, b.w, b.h);
-    const pixels = new Uint8ClampedArray(src.length);
+    const pixels = new Uint8ClampedArray(b.w * b.h * 4);
     const local = new Uint8Array(b.w * b.h);
     for (let y = 0; y < b.h; y += 1) {
       for (let x = 0; x < b.w; x += 1) {
         const li = y * b.w + x;
         if (!selection.mask[(b.y + y) * width + (b.x + x)]) continue;
         local[li] = 1;
+        const gi = ((b.y + y) * width + (b.x + x)) * 4;
         const si = li * 4;
-        pixels[si] = src[si];
-        pixels[si + 1] = src[si + 1];
-        pixels[si + 2] = src[si + 2];
-        pixels[si + 3] = src[si + 3];
+        pixels[si] = active.pixels[gi];
+        pixels[si + 1] = active.pixels[gi + 1];
+        pixels[si + 2] = active.pixels[gi + 2];
+        pixels[si + 3] = active.pixels[gi + 3];
       }
     }
     clearMaskPixels(active.pixels, selection.mask);
     const f: Floating = {
       pixels,
+      origPixels: new Uint8ClampedArray(pixels),
       mask: local,
       origMask: selection.mask.slice(),
       x: b.x,
@@ -858,6 +989,7 @@ export function EditorScreen() {
     setFloating(f);
     floatingRef.current = f;
     syncFloatCanvas(f);
+    setClipboard({ x: b.x, y: b.y, w: b.w, h: b.h, pixels: new Uint8ClampedArray(pixels) });
     setSelTool('move');
     paintLayerCanvas(active);
     recomposite(fullRect(width, height), layers);
@@ -890,7 +1022,7 @@ export function EditorScreen() {
       y: floating.oy,
       w: floating.w,
       h: floating.h,
-      pixels: floating.pixels,
+      pixels: floating.origPixels,
     });
     setFloating(null);
     floatingRef.current = null;
@@ -940,6 +1072,64 @@ export function EditorScreen() {
     setSelPath(sel.bounds.w ? selectionPath(gm, width, height) : null);
     recomposite(fullRect(width, height), layers);
     setVersion((v) => v + 1);
+  };
+
+  const cancelRecentStroke = () => {
+    if (!strokeActive.current) return;
+    const snap = undoRef.current.pop();
+    if (snap && snap.kind === 'layer') {
+      restore(snap);
+      syncHist();
+    }
+    strokeActive.current = false;
+  };
+
+  const onStrokeEnd = () => {
+    strokeActive.current = false;
+  };
+
+  const pickAt = (x: number, y: number) => {
+    cancelRecentStroke();
+    const ctx = composite.getContext('2d');
+    if (!ctx) return;
+    const d = ctx.getImageData(x, y, 1, 1).data;
+    if (d[3] === 0) return;
+    const hex = toHex({ r: d[0], g: d[1], b: d[2], a: d[3] });
+    setColor(hex);
+    setAlpha(255);
+    rememberColor(hex);
+    showToast(`已取色 ${hex}`);
+  };
+
+  const toggleFitZoom = () => {
+    const fit = Math.max(
+      0.1,
+      Math.min(
+        64,
+        Math.min((vp.w - 24) / width, (vp.h - 24) / height),
+      ),
+    );
+    const next = Math.abs(zoom - fit) < Math.max(0.02, fit * 0.02) ? 1 : fit;
+    setZoom(Math.round(next * 100) / 100);
+    setPan({ x: (vp.w - width * next) / 2, y: (vp.h - height * next) / 2 });
+  };
+
+  const lastStrokeAt = useRef(0);
+
+  const onDoubleTap = () => {
+    if (performance.now() - lastStrokeAt.current > 1500) {
+      toggleFitZoom();
+      return;
+    }
+    for (let i = 0; i < 2; i += 1) {
+      const snap = undoRef.current[undoRef.current.length - 1];
+      if (!snap || snap.kind !== 'layer') break;
+      undoRef.current.pop();
+      restore(snap);
+    }
+    syncHist();
+    strokeActive.current = false;
+    toggleFitZoom();
   };
 
   const mergeDown = () => {
@@ -998,6 +1188,16 @@ export function EditorScreen() {
         <div className="spacer" />
 
         <button
+          className={`icon-btn ${gridOn ? 'accent' : ''}`}
+          aria-label="网格"
+          onClick={() => setSheet('grid')}
+        >
+          <Grid size={21} />
+        </button>
+        <button className="icon-btn" aria-label="导出" onClick={() => setSheet('export')}>
+          <Share size={21} />
+        </button>
+        <button
           className="icon-btn"
           aria-label="参考底图"
           onClick={() => setSheet('overlay')}
@@ -1028,6 +1228,12 @@ export function EditorScreen() {
             pan={pan}
             shadeL={deltaL}
             shadeS={deltaS}
+            gridColor={gridColor}
+            gridOn={gridOn}
+            gridStep={gridStep}
+            pixelPerfect={pixelPerfect}
+            alphaLock={active?.alphaLock ?? false}
+            hand={hand}
             selection={selection}
             selPath={selPath}
             selTool={selTool}
@@ -1038,6 +1244,14 @@ export function EditorScreen() {
             onMoveStart={onMoveStart}
             onMoveDelta={onMoveDelta}
             onMoveEnd={onMoveEnd}
+            onUndo={() => {
+              cancelRecentStroke();
+              undo();
+            }}
+            onRedo={redo}
+            onDoubleTap={onDoubleTap}
+            onLongPressPick={pickAt}
+            onStrokeEnd={onStrokeEnd}
             onZoom={setZoom}
             onPan={setPan}
             onBeginStroke={beginStroke}
@@ -1045,6 +1259,7 @@ export function EditorScreen() {
             onViewport={(vw, vh) => {
               if (centered.current) return;
               centered.current = true;
+              setVp({ w: vw, h: vh });
               setPan({ x: (vw - width * zoom) / 2, y: (vh - height * zoom) / 2 });
             }}
             onPick={(hex) => {
@@ -1294,7 +1509,10 @@ export function EditorScreen() {
           <button
             key={t.id}
             className={`tool ${tool === t.id ? 'active' : ''}`}
-            onClick={() => setTool(t.id)}
+            onClick={() => {
+              setHand(false);
+              setTool(t.id);
+            }}
           >
             {t.icon}
             {t.label}
@@ -1309,8 +1527,18 @@ export function EditorScreen() {
           重做
         </button>
         <button
-          className={`tool ${tool === 'select' ? 'active' : ''}`}
+          className={`tool ${hand ? 'active' : ''}`}
+          onPointerDown={() => {
+            window.clearTimeout(handTimer.current);
+            handTimer.current = window.setTimeout(() => setHand(true), 520);
+          }}
+          onPointerUp={() => window.clearTimeout(handTimer.current)}
+          onPointerCancel={() => window.clearTimeout(handTimer.current)}
           onClick={() => {
+            if (hand) {
+              setHand(false);
+              return;
+            }
             setSelTool('rect');
             setTool('select');
           }}
@@ -1327,6 +1555,8 @@ export function EditorScreen() {
           palette={palette}
           onChange={setColor}
           onAlpha={setAlpha}
+          onRemove={removePalette}
+          onClear={clearPalette}
         />
       )}
       {sheet === 'layers' && active && (
@@ -1346,6 +1576,33 @@ export function EditorScreen() {
           onAddGroup={addGroup}
           onToggleGroup={toggleGroup}
           onAssignGroup={assignGroup}
+          onRename={renameLayer}
+          onClearLayer={clearLayer}
+          onAlphaLock={toggleAlphaLock}
+        />
+      )}
+      {sheet === 'grid' && (
+        <GridSheet
+          color={gridColor}
+          on={gridOn}
+          step={gridStep}
+          onColor={setGridColor}
+          onStep={setGridStep}
+          onToggle={() => setGridOn((v) => !v)}
+        />
+      )}
+      {sheet === 'export' && project && (
+        <ExportSheet
+          lastPath={lastExport}
+          onExport={async (scale) => {
+            try {
+              const path = await saveProjectPng(project, scale);
+              setLastExport(path);
+              showToast(`已导出：${path}`);
+            } catch {
+              showToast('导出失败');
+            }
+          }}
         />
       )}
       {sheet === 'overlay' && (

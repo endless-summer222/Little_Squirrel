@@ -1,4 +1,4 @@
-﻿import { createDemoTexture } from './pixels';
+import { createDemoTexture } from './pixels';
 import { compositeLayers, ensureLayers } from './layers';
 import type { Project } from './types';
 
@@ -18,11 +18,7 @@ function safeName(name: string): string {
   return (name || 'texture').replace(/[\\/:*?"<>|]+/g, '_').slice(0, 80);
 }
 
-/**
- * 导出工程为 PNG。
- * 目前是单图层像素缓冲；多图层合成接入后这里改成 blend.ts 的结果。
- */
-export async function exportProjectPng(project: Project, scale = 1): Promise<void> {
+async function renderBlob(project: Project, scale: number): Promise<{ blob: Blob; filename: string }> {
   const width = project.width;
   const height = project.height;
   if (!width || !height) throw new Error('empty canvas');
@@ -55,7 +51,55 @@ export async function exportProjectPng(project: Project, scale = 1): Promise<voi
     output.toBlob(resolve, 'image/png'),
   );
   if (!blob) throw new Error('encode failed');
-
   const suffix = scale === 1 ? '' : `@${scale}x`;
-  downloadBlob(blob, `${safeName(project.name)}${suffix}.png`);
+  return { blob, filename: `${safeName(project.name)}${suffix}.png` };
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const s = String(reader.result);
+      resolve(s.slice(s.indexOf(',') + 1));
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+function isNative(): boolean {
+  const cap = (window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
+  return !!cap?.isNativePlatform?.();
+}
+
+/**
+ * 导出 PNG 并返回可展示的位置：Android 为 Documents/PixelUV/文件名，Web 为浏览器下载目录。
+ */
+export async function saveProjectPng(project: Project, scale = 1): Promise<string> {
+  const { blob, filename } = await renderBlob(project, scale);
+
+  if (isNative()) {
+    const { Filesystem, Directory } = await import('@capacitor/filesystem');
+    const data = await blobToBase64(blob);
+    const res = await Filesystem.writeFile({
+      path: `PixelUV/${filename}`,
+      data,
+      directory: Directory.Documents,
+      recursive: true,
+    });
+    try {
+      const { Share } = await import('@capacitor/share');
+      await Share.share({ title: filename, url: res.uri });
+    } catch {
+      // 用户取消分享不算失败
+    }
+    return `Documents/PixelUV/${filename}`;
+  }
+
+  downloadBlob(blob, filename);
+  return `浏览器下载目录/${filename}`;
+}
+
+export async function exportProjectPng(project: Project, scale = 1): Promise<string> {
+  return saveProjectPng(project, scale);
 }

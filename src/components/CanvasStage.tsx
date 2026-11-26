@@ -47,6 +47,12 @@ interface Props {
   onDirty: (rect: Rect) => void;
   onPick: (hex: string) => void;
   onViewport?: (w: number, h: number) => void;
+  gridColor: string;
+  gridOn: boolean;
+  gridStep: number;
+  pixelPerfect: boolean;
+  alphaLock: boolean;
+  hand: boolean;
   selection: Selection | null;
   selPath: Path2D | null;
   selTool: SelectTool;
@@ -57,6 +63,11 @@ interface Props {
   onMoveStart: (x: number, y: number) => void;
   onMoveDelta: (dx: number, dy: number) => void;
   onMoveEnd: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  onDoubleTap: () => void;
+  onLongPressPick: (x: number, y: number) => void;
+  onStrokeEnd: () => void;
 }
 
 const toHsl = converter('hsl');
@@ -107,6 +118,12 @@ export function CanvasStage({
   onDirty,
   onPick,
   onViewport,
+  gridColor,
+  gridOn,
+  gridStep,
+  pixelPerfect,
+  alphaLock,
+  hand,
   selection,
   selPath,
   selTool,
@@ -117,13 +134,32 @@ export function CanvasStage({
   onMoveStart,
   onMoveDelta,
   onMoveEnd,
+  onUndo,
+  onRedo,
+  onDoubleTap,
+  onLongPressPick,
+  onStrokeEnd,
 }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [viewport, setViewport] = useState({ w: 0, h: 0 });
   const [ants, setAnts] = useState(0);
+  const [loupe, setLoupe] = useState<{ x: number; y: number } | null>(null);
+  const loupeRef = useRef<HTMLCanvasElement | null>(null);
   const [shape, setShape] = useState<{ start: { x: number; y: number }; cur: { x: number; y: number }; points: { x: number; y: number }[] } | null>(null);
   const moving = useRef<{ x: number; y: number } | null>(null);
+  const gesture = useRef({
+    max: 0,
+    moved: false,
+    longFired: false,
+    longTimer: 0,
+    downAt: 0,
+    startX: 0,
+    startY: 0,
+    lastTap: 0,
+    lastX: 0,
+    lastY: 0,
+  });
   const drawing = useRef(false);
   const last = useRef<{ x: number; y: number } | null>(null);
   const visited = useRef<Uint8Array | null>(null);
@@ -261,22 +297,26 @@ export function CanvasStage({
     }
 
     // 网格（只画可见范围）
-    if (zoom >= 8 && iw <= 200000 && ih <= 200000) {
-      const x0 = Math.max(0, Math.floor(-pan.x / zoom));
+    if ((zoom >= 8 || gridOn) && iw <= 200000 && ih <= 200000) {
+      const step = gridOn ? Math.max(1, gridStep) : 1;
+      const x0 = Math.max(0, Math.floor(-pan.x / zoom / step) * step);
       const x1 = Math.min(width, Math.ceil((vw - pan.x) / zoom));
-      const y0 = Math.max(0, Math.floor(-pan.y / zoom));
+      const y0 = Math.max(0, Math.floor(-pan.y / zoom / step) * step);
       const y1 = Math.min(height, Math.ceil((vh - pan.y) / zoom));
-      ctx.fillStyle = 'rgba(0,0,0,0.12)';
-      for (let x = x0; x <= x1; x += 1) {
+      ctx.fillStyle = gridOn ? '#9DFFEB' : gridColor;
+      ctx.globalAlpha = gridOn ? 0.55 : 0.2;
+      const lw = gridOn ? 1.5 : 1;
+      for (let x = x0; x <= x1; x += step) {
         const px = Math.round(pan.x + x * zoom);
-        ctx.fillRect(px, Math.max(0, pan.y), 1, Math.min(vh, ih));
+        ctx.fillRect(px, Math.max(0, pan.y), lw, Math.min(vh, ih));
       }
-      for (let y = y0; y <= y1; y += 1) {
+      for (let y = y0; y <= y1; y += step) {
         const py = Math.round(pan.y + y * zoom);
-        ctx.fillRect(Math.max(0, pan.x), py, Math.min(vw, iw), 1);
+        ctx.fillRect(Math.max(0, pan.x), py, Math.min(vw, iw), lw);
       }
+      ctx.globalAlpha = 1;
     }
-  }, [source, width, height, zoom, pan, viewport, selection, selPath, selTool, selOffset, shape, ants]);
+  }, [source, width, height, zoom, pan, viewport, selection, selPath, selTool, selOffset, shape, ants, gridColor, gridOn, gridStep]);
 
   useEffect(() => {
     draw();
@@ -314,6 +354,8 @@ export function CanvasStage({
       brush,
       rgba,
       selection?.mask,
+      pixelPerfect && brush === 1,
+      alphaLock,
     );
     const half = Math.floor(brush / 2);
     onDirty(
@@ -344,6 +386,7 @@ export function CanvasStage({
         if (seen[idx]) continue;
         seen[idx] = 1;
         if (selection && !selection.mask[idx]) continue;
+        if (alphaLock && activePixels[idx * 4 + 3] === 0) continue;
         const src = getPixel(activePixels, width, height, px, py);
         if (src.a === 0) continue;
         const hsl = toHsl({ mode: 'rgb', r: src.r / 255, g: src.g / 255, b: src.b / 255 });
@@ -379,6 +422,7 @@ export function CanvasStage({
         const idx = y * width + x;
         if (!region[idx]) continue;
         if (selection && !selection.mask[idx]) continue;
+        if (alphaLock && activePixels[idx * 4 + 3] === 0) continue;
         setPixel(activePixels, width, height, x, y, fill);
       }
     }
@@ -389,7 +433,32 @@ export function CanvasStage({
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const g = gesture.current;
+    if (pointers.current.size === 1) {
+      g.max = 1;
+      g.moved = false;
+      g.longFired = false;
+      g.downAt = performance.now();
+      g.startX = e.clientX;
+      g.startY = e.clientY;
+      window.clearTimeout(g.longTimer);
+      g.longTimer = window.setTimeout(() => {
+        if (g.moved || pointers.current.size !== 1) return;
+        g.longFired = true;
+        drawing.current = false;
+        const r = wrapRef.current?.getBoundingClientRect();
+        if (r) setLoupe({ x: e.clientX - r.left, y: e.clientY - r.top });
+      }, 380);
+    } else {
+      g.max = Math.max(g.max, pointers.current.size);
+      window.clearTimeout(g.longTimer);
+    }
 
+    if (pointers.current.size === 1 && hand) {
+      gesture.current.startX = e.clientX;
+      gesture.current.startY = e.clientY;
+      return;
+    }
     if (pointers.current.size === 2) {
       const [a, b] = [...pointers.current.values()];
       pinch.current = {
@@ -451,7 +520,25 @@ export function CanvasStage({
 
   const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (!pointers.current.has(e.pointerId)) return;
+    if (hand && pointers.current.size === 1) {
+      const g = gesture.current;
+      onPan({ x: pan.x + (e.clientX - g.startX), y: pan.y + (e.clientY - g.startY) });
+      g.startX = e.clientX;
+      g.startY = e.clientY;
+      pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      return;
+    }
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const g = gesture.current;
+    if (g.longFired) {
+      const r = wrapRef.current?.getBoundingClientRect();
+      if (r) setLoupe({ x: e.clientX - r.left, y: e.clientY - r.top });
+      return;
+    }
+    if (Math.hypot(e.clientX - g.startX, e.clientY - g.startY) > 6) {
+      g.moved = true;
+      window.clearTimeout(g.longTimer);
+    }
 
     if (pointers.current.size === 2 && pinch.current) {
       const [a, b] = [...pointers.current.values()];
@@ -497,7 +584,35 @@ export function CanvasStage({
   };
 
   const endPointer = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const g = gesture.current;
     pointers.current.delete(e.pointerId);
+    if (pointers.current.size === 0) {
+      window.clearTimeout(g.longTimer);
+      if (g.longFired) {
+        const t = toTexel(e.clientX, e.clientY);
+        if (t.x >= 0 && t.y >= 0 && t.x < width && t.y < height) onLongPressPick(t.x, t.y);
+        setLoupe(null);
+        g.longFired = false;
+        onStrokeEnd();
+        return;
+      }
+      const dur = performance.now() - g.downAt;
+      if (g.max >= 2 && !g.moved && dur < 320) {
+        if (g.max === 2) onUndo();
+        else onRedo();
+      } else if (g.max === 1 && !g.moved && !g.longFired && dur < 260) {
+        const now = performance.now();
+        const far = Math.hypot(e.clientX - g.lastX, e.clientY - g.lastY);
+        if (now - g.lastTap < 340 && far < 28) {
+          g.lastTap = 0;
+          onDoubleTap();
+        } else {
+          g.lastTap = now;
+          g.lastX = e.clientX;
+          g.lastY = e.clientY;
+        }
+      }
+    }
     if (pointers.current.size < 2) pinch.current = null;
     if (tool === 'select') {
       if (moving.current) {
@@ -522,8 +637,50 @@ export function CanvasStage({
     if (drawing.current) {
       drawing.current = false;
       last.current = null;
+      onStrokeEnd();
+    } else if (g.longFired) {
+      g.longFired = false;
+      onStrokeEnd();
     }
   };
+
+  useEffect(() => {
+    if (!loupe) return;
+    const cv = loupeRef.current;
+    if (!cv) return;
+    const size = 96;
+    cv.width = size * 2;
+    cv.height = size * 2;
+    const ctx = cv.getContext('2d');
+    if (!ctx) return;
+    const r = wrapRef.current?.getBoundingClientRect();
+    if (!r) return;
+    const tx = Math.floor((loupe.x - pan.x) / zoom);
+    const ty = Math.floor((loupe.y - pan.y) / zoom);
+    const half = 6;
+    ctx.imageSmoothingEnabled = false;
+    ctx.fillStyle = '#111114';
+    ctx.fillRect(0, 0, size * 2, size * 2);
+    ctx.drawImage(
+      source,
+      tx - half,
+      ty - half,
+      half * 2,
+      half * 2,
+      0,
+      0,
+      size * 2,
+      size * 2,
+    );
+    ctx.strokeStyle = 'rgba(157,255,235,0.9)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(size, size - 14);
+    ctx.lineTo(size, size + 14);
+    ctx.moveTo(size - 14, size);
+    ctx.lineTo(size + 14, size);
+    ctx.stroke();
+  }, [loupe, source, pan, zoom]);
 
   return (
     <div
@@ -535,6 +692,16 @@ export function CanvasStage({
       onPointerCancel={endPointer}
     >
       <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block' }} />
+      {loupe && (
+        <canvas
+          ref={loupeRef}
+          className="loupe"
+          style={{
+            left: Math.max(4, Math.min(viewport.w - 100, loupe.x - 48)),
+            top: Math.max(4, loupe.y - 120),
+          }}
+        />
+      )}
     </div>
   );
 }
