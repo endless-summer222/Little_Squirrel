@@ -1,5 +1,6 @@
 ﻿import { useMemo, useRef, useState } from 'react';
 import { createDemoTexture } from '../core/pixels';
+import { compositeLayers, ensureLayers } from '../core/layers';
 import { exportProjectPng } from '../core/export';
 import { useApp, type Project } from '../state/useApp';
 import { TextureView } from '../components/TextureView';
@@ -69,10 +70,12 @@ function useLongPress(onLong: () => void) {
 
 function FileCard({ project, onMenu }: { project: Project; onMenu: () => void }) {
   const openProject = useApp((s) => s.openProject);
-  const pixels = useMemo(
-    () => project.pixels ?? createDemoTexture(Math.max(project.width, project.height), project.id),
-    [project],
-  );
+  const pixels = useMemo(() => {
+    if (project.layers && project.layers.length > 0) {
+      return compositeLayers(ensureLayers(project), project.width, project.height);
+    }
+    return createDemoTexture(Math.max(project.width, project.height), project.id);
+  }, [project]);
   const press = useLongPress(onMenu);
 
   return (

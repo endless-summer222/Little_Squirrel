@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useRef,
+  useState,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import { converter } from 'culori';
@@ -13,43 +14,72 @@ import {
   toHex,
   type RGBA,
 } from '../core/pixels';
+import type { Rect } from '../core/layers';
 
 export type ToolId = 'pencil' | 'eraser' | 'bucket' | 'dropper' | 'shade' | 'select';
 
 interface Props {
   width: number;
   height: number;
-  pixels: Uint8ClampedArray;
+  source: HTMLCanvasElement;
+  version: number;
+  activePixels: Uint8ClampedArray | null;
   tool: ToolId;
   color: string;
   alpha: number;
   brush: number;
   zoom: number;
   pan: { x: number; y: number };
-  version: number;
   shadeL: number;
   shadeS: number;
   onZoom: (z: number) => void;
   onPan: (p: { x: number; y: number }) => void;
   onBeginStroke: () => void;
-  onDirty: () => void;
+  onDirty: (rect: Rect) => void;
   onPick: (hex: string) => void;
+  onViewport?: (w: number, h: number) => void;
 }
 
 const toHsl = converter('hsl');
 const toRgb = converter('rgb');
 
+let checkerPattern: CanvasPattern | null = null;
+function getChecker(ctx: CanvasRenderingContext2D): CanvasPattern | null {
+  if (checkerPattern) return checkerPattern;
+  const tile = document.createElement('canvas');
+  tile.width = 16;
+  tile.height = 16;
+  const tctx = tile.getContext('2d');
+  if (!tctx) return null;
+  tctx.fillStyle = '#232326';
+  tctx.fillRect(0, 0, 16, 16);
+  tctx.fillStyle = '#2b2b30';
+  tctx.fillRect(0, 0, 8, 8);
+  tctx.fillRect(8, 8, 8, 8);
+  checkerPattern = ctx.createPattern(tile, 'repeat');
+  return checkerPattern;
+}
+
+function clampRect(x: number, y: number, w: number, h: number, W: number, H: number): Rect {
+  const x0 = Math.max(0, x);
+  const y0 = Math.max(0, y);
+  const x1 = Math.min(W, x + w);
+  const y1 = Math.min(H, y + h);
+  return { x: x0, y: y0, w: Math.max(0, x1 - x0), h: Math.max(0, y1 - y0) };
+}
+
 export function CanvasStage({
   width,
   height,
-  pixels,
+  source,
+  version,
+  activePixels,
   tool,
   color,
   alpha,
   brush,
   zoom,
   pan,
-  version,
   shadeL,
   shadeS,
   onZoom,
@@ -57,9 +87,11 @@ export function CanvasStage({
   onBeginStroke,
   onDirty,
   onPick,
+  onViewport,
 }: Props) {
+  const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const offRef = useRef<HTMLCanvasElement | null>(null);
+  const [viewport, setViewport] = useState({ w: 0, h: 0 });
   const drawing = useRef(false);
   const last = useRef<{ x: number; y: number } | null>(null);
   const visited = useRef<Uint8Array | null>(null);
@@ -73,80 +105,134 @@ export function CanvasStage({
     py: number;
   } | null>(null);
 
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0].contentRect;
+      setViewport({ w: r.width, h: r.height });
+      onViewport?.(r.width, r.height);
+    });
+    ro.observe(el);
+    const r = el.getBoundingClientRect();
+    setViewport({ w: r.width, h: r.height });
+    onViewport?.(r.width, r.height);
+    return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const draw = useCallback(() => {
     const cv = canvasRef.current;
-    if (!cv) return;
-    const w = Math.round(width * zoom);
-    const h = Math.round(height * zoom);
-    if (cv.width !== w || cv.height !== h) {
-      cv.width = w;
-      cv.height = h;
+    const vw = viewport.w;
+    const vh = viewport.h;
+    if (!cv || vw <= 0 || vh <= 0) return;
+    const dpr = window.devicePixelRatio || 1;
+    const pw = Math.round(vw * dpr);
+    const ph = Math.round(vh * dpr);
+    if (cv.width !== pw || cv.height !== ph) {
+      cv.width = pw;
+      cv.height = ph;
     }
-    let off = offRef.current;
-    if (!off) {
-      off = document.createElement('canvas');
-      offRef.current = off;
-    }
-    if (off.width !== width || off.height !== height) {
-      off.width = width;
-      off.height = height;
-    }
-    const octx = off.getContext('2d');
     const ctx = cv.getContext('2d');
-    if (!octx || !ctx) return;
-    octx.clearRect(0, 0, width, height);
-    octx.putImageData(new ImageData(new Uint8ClampedArray(pixels), width, height), 0, 0);
-    ctx.imageSmoothingEnabled = false;
-    ctx.clearRect(0, 0, w, h);
-    ctx.drawImage(off, 0, 0, w, h);
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, vw, vh);
 
-    if (zoom >= 8 && w <= 2048 && h <= 2048) {
-      ctx.fillStyle = 'rgba(0,0,0,0.10)';
-      for (let i = 1; i < width; i += 1) {
-        ctx.fillRect(Math.round(i * zoom), 0, 1, h);
+    const iw = width * zoom;
+    const ih = height * zoom;
+
+    // 图片区域的透明棋盘格（屏幕空间）
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(pan.x, pan.y, iw, ih);
+    ctx.clip();
+    const pattern = getChecker(ctx);
+    if (pattern) {
+      ctx.fillStyle = pattern;
+      ctx.fillRect(pan.x, pan.y, iw, ih);
+    }
+    ctx.restore();
+
+    // 只画视口内的源区域
+    const sx = Math.max(0, -pan.x / zoom);
+    const sy = Math.max(0, -pan.y / zoom);
+    const sw = Math.min(width - sx, vw / zoom);
+    const sh = Math.min(height - sy, vh / zoom);
+    if (sw > 0 && sh > 0) {
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(
+        source,
+        sx,
+        sy,
+        sw,
+        sh,
+        pan.x + sx * zoom,
+        pan.y + sy * zoom,
+        sw * zoom,
+        sh * zoom,
+      );
+    }
+
+    // 边框
+    ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(pan.x - 0.5, pan.y - 0.5, iw + 1, ih + 1);
+
+    // 网格（只画可见范围）
+    if (zoom >= 8 && iw <= 200000 && ih <= 200000) {
+      const x0 = Math.max(0, Math.floor(-pan.x / zoom));
+      const x1 = Math.min(width, Math.ceil((vw - pan.x) / zoom));
+      const y0 = Math.max(0, Math.floor(-pan.y / zoom));
+      const y1 = Math.min(height, Math.ceil((vh - pan.y) / zoom));
+      ctx.fillStyle = 'rgba(0,0,0,0.12)';
+      for (let x = x0; x <= x1; x += 1) {
+        const px = Math.round(pan.x + x * zoom);
+        ctx.fillRect(px, Math.max(0, pan.y), 1, Math.min(vh, ih));
       }
-      for (let i = 1; i < height; i += 1) {
-        ctx.fillRect(0, Math.round(i * zoom), w, 1);
+      for (let y = y0; y <= y1; y += 1) {
+        const py = Math.round(pan.y + y * zoom);
+        ctx.fillRect(Math.max(0, pan.x), py, Math.min(vw, iw), 1);
       }
     }
-  }, [pixels, width, height, zoom]);
+  }, [source, width, height, zoom, pan, viewport]);
 
   useEffect(() => {
     draw();
   }, [draw, version]);
 
   const toTexel = (clientX: number, clientY: number) => {
-    const cv = canvasRef.current;
-    if (!cv) return { x: 0, y: 0 };
-    const r = cv.getBoundingClientRect();
+    const el = wrapRef.current;
+    if (!el) return { x: 0, y: 0 };
+    const r = el.getBoundingClientRect();
     return {
-      x: Math.floor(((clientX - r.left) / r.width) * width),
-      y: Math.floor(((clientY - r.top) / r.height) * height),
+      x: Math.floor((clientX - r.left - pan.x) / zoom),
+      y: Math.floor((clientY - r.top - pan.y) / zoom),
     };
   };
 
   const paintAt = (x: number, y: number) => {
+    if (!activePixels) return;
     const rgba: RGBA =
       tool === 'eraser' ? { r: 0, g: 0, b: 0, a: 0 } : { ...parseHex(color), a: alpha };
     const from = last.current ?? { x, y };
-    strokeLine(
-      pixels,
-      width,
-      height,
-      from.x,
-      from.y,
-      x,
-      y,
-      brush,
-      rgba,
+    strokeLine(activePixels, width, height, from.x, from.y, x, y, brush, rgba);
+    const half = Math.floor(brush / 2);
+    onDirty(
+      clampRect(
+        Math.min(from.x, x) - half,
+        Math.min(from.y, y) - half,
+        Math.abs(x - from.x) + brush,
+        Math.abs(y - from.y) + brush,
+        width,
+        height,
+      ),
     );
     last.current = { x, y };
     draw();
-    onDirty();
   };
 
-  /** 明度/饱和度笔刷：每个像素在一笔里只调整一次 */
   const shadeAt = (x: number, y: number) => {
+    if (!activePixels) return;
     if (!visited.current) visited.current = new Uint8Array(width * height);
     const seen = visited.current;
     const half = Math.floor(brush / 2);
@@ -158,17 +244,15 @@ export function CanvasStage({
         const idx = py * width + px;
         if (seen[idx]) continue;
         seen[idx] = 1;
-        const src = getPixel(pixels, width, height, px, py);
+        const src = getPixel(activePixels, width, height, px, py);
         if (src.a === 0) continue;
         const hsl = toHsl({ mode: 'rgb', r: src.r / 255, g: src.g / 255, b: src.b / 255 });
         if (!hsl) continue;
-        let l = (hsl.l ?? 0) + shadeL / 100;
-        let s = (hsl.s ?? 0) * (1 + shadeS / 100);
-        l = Math.min(1, Math.max(0, l));
-        s = Math.min(1, Math.max(0, s));
+        const l = Math.min(1, Math.max(0, (hsl.l ?? 0) + shadeL / 100));
+        const s = Math.min(1, Math.max(0, (hsl.s ?? 0) * (1 + shadeS / 100)));
         const rgb = toRgb({ mode: 'hsl', h: hsl.h ?? 0, s, l });
         if (!rgb) continue;
-        setPixel(pixels, width, height, px, py, {
+        setPixel(activePixels, width, height, px, py, {
           r: Math.round((rgb.r ?? 0) * 255),
           g: Math.round((rgb.g ?? 0) * 255),
           b: Math.round((rgb.b ?? 0) * 255),
@@ -176,39 +260,42 @@ export function CanvasStage({
         });
       }
     }
+    onDirty(clampRect(x - half, y - half, brush, brush, width, height));
     draw();
-    onDirty();
   };
 
   const floodFill = (sx: number, sy: number) => {
-    const target = getPixel(pixels, width, height, sx, sy);
+    if (!activePixels) return;
+    const target = getPixel(activePixels, width, height, sx, sy);
     const fill = parseHex(color);
-    if (
-      target.r === fill.r &&
-      target.g === fill.g &&
-      target.b === fill.b &&
-      target.a === fill.a
-    )
+    if (target.r === fill.r && target.g === fill.g && target.b === fill.b && target.a === alpha)
       return;
     const stack: [number, number][] = [[sx, sy]];
     const seen = new Uint8Array(width * height);
+    let minX = sx;
+    let minY = sy;
+    let maxX = sx;
+    let maxY = sy;
     while (stack.length) {
       const [x, y] = stack.pop() as [number, number];
       if (x < 0 || y < 0 || x >= width || y >= height) continue;
       const idx = y * width + x;
       if (seen[idx]) continue;
       seen[idx] = 1;
-      const p = getPixel(pixels, width, height, x, y);
-      if (p.r !== target.r || p.g !== target.g || p.b !== target.b || p.a !== target.a)
-        continue;
-      setPixel(pixels, width, height, x, y, { ...fill, a: alpha });
+      const p = getPixel(activePixels, width, height, x, y);
+      if (p.r !== target.r || p.g !== target.g || p.b !== target.b || p.a !== target.a) continue;
+      setPixel(activePixels, width, height, x, y, { ...fill, a: alpha });
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
       stack.push([x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]);
     }
+    onDirty(clampRect(minX, minY, maxX - minX + 1, maxY - minY + 1, width, height));
     draw();
-    onDirty();
   };
 
-  const onPointerDown = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
@@ -232,7 +319,10 @@ export function CanvasStage({
     if (x < 0 || y < 0 || x >= width || y >= height) return;
 
     if (tool === 'dropper') {
-      onPick(toHex(getPixel(pixels, width, height, x, y)));
+      const sctx = source.getContext('2d');
+      if (!sctx) return;
+      const d = sctx.getImageData(x, y, 1, 1).data;
+      onPick(toHex({ r: d[0], g: d[1], b: d[2], a: d[3] }));
       return;
     }
     if (tool === 'bucket') {
@@ -240,7 +330,7 @@ export function CanvasStage({
       floodFill(x, y);
       return;
     }
-    if (tool === 'select') return;
+    if (tool === 'select' || !activePixels) return;
 
     onBeginStroke();
     drawing.current = true;
@@ -253,7 +343,7 @@ export function CanvasStage({
     paintAt(x, y);
   };
 
-  const onPointerMove = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+  const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (!pointers.current.has(e.pointerId)) return;
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
@@ -263,10 +353,15 @@ export function CanvasStage({
       const cx = (a.x + b.x) / 2;
       const cy = (a.y + b.y) / 2;
       const next = Math.min(64, Math.max(0.1, (pinch.current.zoom * dist) / pinch.current.dist));
-      onZoom(Math.round(next * 100) / 100);
+      const zoomed = Math.round(next * 100) / 100;
+      // 缩放锚点固定在视口正中心；双指整体移动仍然平移
+      const k = zoomed / pinch.current.zoom;
+      const vcx = viewport.w / 2;
+      const vcy = viewport.h / 2;
+      onZoom(zoomed);
       onPan({
-        x: pinch.current.px + (cx - pinch.current.cx),
-        y: pinch.current.py + (cy - pinch.current.cy),
+        x: vcx - (vcx - pinch.current.px) * k + (cx - pinch.current.cx),
+        y: vcy - (vcy - pinch.current.py) * k + (cy - pinch.current.cy),
       });
       return;
     }
@@ -274,14 +369,11 @@ export function CanvasStage({
     if (!drawing.current) return;
     const { x, y } = toTexel(e.clientX, e.clientY);
     if (x < 0 || y < 0 || x >= width || y >= height) return;
-    if (tool === 'shade') {
-      shadeAt(x, y);
-      return;
-    }
-    paintAt(x, y);
+    if (tool === 'shade') shadeAt(x, y);
+    else paintAt(x, y);
   };
 
-  const endPointer = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+  const endPointer = (e: ReactPointerEvent<HTMLDivElement>) => {
     pointers.current.delete(e.pointerId);
     if (pointers.current.size < 2) pinch.current = null;
     if (drawing.current) {
@@ -292,21 +384,14 @@ export function CanvasStage({
 
   return (
     <div
-      className="stage"
-      style={{
-        transform: `translate(${pan.x}px, ${pan.y}px)`,
-        width: width * zoom,
-        height: height * zoom,
-      }}
+      ref={wrapRef}
+      className="viewport"
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={endPointer}
+      onPointerCancel={endPointer}
     >
-      <canvas
-        ref={canvasRef}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={endPointer}
-        onPointerCancel={endPointer}
-        style={{ width: '100%', height: '100%', touchAction: 'none' }}
-      />
+      <canvas ref={canvasRef} style={{ width: '100%', height: '100%', display: 'block' }} />
     </div>
   );
 }

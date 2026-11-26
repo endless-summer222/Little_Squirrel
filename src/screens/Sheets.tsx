@@ -1,11 +1,15 @@
 ﻿import { useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import { converter, formatHex } from 'culori';
 import { parseHex } from '../core/pixels';
+import type { BlendMode, Layer, LayerGroup } from '../core/types';
 import { useApp } from '../state/useApp';
 import { ColorWheel } from '../components/ColorWheel';
 import {
   Check,
   Ellipse,
+  Eye,
+  EyeOff,
+  Folder,
   Lasso,
   Marquee,
   Move,
@@ -48,7 +52,7 @@ export function NewProjectSheet({ folderId }: { folderId: string | null }) {
   const [height, setHeight] = useState(64);
   const [name, setName] = useState('');
 
-  const clamp = (v: number) => Math.min(1024, Math.max(32, Math.round(v) || 32));
+  const clamp = (v: number) => Math.min(1024, Math.max(1, Math.round(v) || 1));
   const preset = (n: number) => {
     setWidth(n);
     setHeight(n);
@@ -72,14 +76,14 @@ export function NewProjectSheet({ folderId }: { folderId: string | null }) {
       </div>
 
       <div className="muted" style={{ margin: '6px 0 8px' }}>
-        自定义宽高（32 ~ 1024，可非正方形）
+        自定义宽高（1 ~ 1024，可非正方形）
       </div>
       <div className="size-inputs">
         <label>
           <span>宽</span>
           <input
             type="number"
-            min={32}
+            min={1}
             max={1024}
             value={width}
             onChange={(e) => setWidth(Number(e.target.value))}
@@ -92,7 +96,7 @@ export function NewProjectSheet({ folderId }: { folderId: string | null }) {
           <span>高</span>
           <input
             type="number"
-            min={32}
+            min={1}
             max={1024}
             value={height}
             onChange={(e) => setHeight(Number(e.target.value))}
@@ -460,32 +464,93 @@ export function SelectionSheet({ onPick }: { onPick: (tool: SelectionTool) => vo
   );
 }
 
+const BLEND_LABEL: Record<string, string> = {
+  normal: '正常',
+  multiply: '正片叠底',
+  screen: '滤色',
+  overlay: '叠加',
+  darken: '变暗',
+  lighten: '变亮',
+  'color-dodge': '颜色减淡',
+  'color-burn': '颜色加深',
+  'hard-light': '强光',
+  'soft-light': '柔光',
+  difference: '差值',
+  exclusion: '排除',
+  hue: '色相',
+  saturation: '饱和度',
+  color: '颜色',
+  luminosity: '明度',
+};
+
+type Row =
+  | { kind: 'group'; group: LayerGroup; count: number }
+  | { kind: 'layer'; layer: Layer };
+
 export function LayersSheet({
   layers,
-  activeIndex,
+  groups,
+  activeId,
   onSelect,
   onReorder,
+  onToggle,
+  onOpacity,
+  onBlend,
+  onAdd,
+  onDuplicate,
+  onDelete,
+  onMerge,
+  onAddGroup,
+  onToggleGroup,
+  onAssignGroup,
 }: {
-  layers: { id: string; name: string }[];
-  activeIndex: number;
-  onSelect: (i: number) => void;
+  layers: Layer[];
+  groups: LayerGroup[];
+  activeId: string;
+  onSelect: (id: string) => void;
   onReorder: (from: number, to: number) => void;
+  onToggle: (id: string) => void;
+  onOpacity: (id: string, value: number) => void;
+  onBlend: (id: string, blend: BlendMode) => void;
+  onAdd: () => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+  onMerge: () => void;
+  onAddGroup: () => void;
+  onToggleGroup: (id: string) => void;
+  onAssignGroup: (layerId: string, groupId: string | null) => void;
 }) {
-  const [blend, setBlend] = useState<Record<string, string>>({});
-  const [drag, setDrag] = useState<{ from: number; to: number; id: string } | null>(null);
+  const [drag, setDrag] = useState<{
+    layerId: string;
+    over: number;
+    overGroup: string | null;
+  } | null>(null);
   const rowRefs = useRef<(HTMLDivElement | null)[]>([]);
   const rectsRef = useRef<{ top: number; height: number }[]>([]);
-  const activeId = layers[activeIndex]?.id;
+  const active = layers.find((l) => l.id === activeId) ?? layers[layers.length - 1];
 
-  const order = (() => {
-    if (!drag || drag.from === drag.to) return layers;
-    const next = [...layers];
-    const [item] = next.splice(drag.from, 1);
-    next.splice(drag.to, 0, item);
-    return next;
-  })();
+  const rows: Row[] = [];
+  const seen = new Set<string>();
+  for (const layer of layers) {
+    const g = layer.groupId ? groups.find((x) => x.id === layer.groupId) : null;
+    if (g && !seen.has(g.id)) {
+      seen.add(g.id);
+      rows.push({
+        kind: 'group',
+        group: g,
+        count: layers.filter((l) => l.groupId === g.id).length,
+      });
+    }
+    if (g && !g.expanded) continue;
+    rows.push({ kind: 'layer', layer });
+  }
+  for (const g of groups) {
+    if (!seen.has(g.id)) {
+      rows.push({ kind: 'group', group: g, count: 0 });
+    }
+  }
 
-  const startDrag = (e: ReactPointerEvent<HTMLButtonElement>, from: number) => {
+  const startDrag = (e: ReactPointerEvent<HTMLButtonElement>, layerId: string) => {
     e.stopPropagation();
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -493,41 +558,76 @@ export function LayersSheet({
       const r = el?.getBoundingClientRect();
       return { top: r?.top ?? 0, height: r?.height ?? 0 };
     });
-    setDrag({ from, to: from, id: layers[from].id });
+    setDrag({ layerId, over: -1, overGroup: null });
   };
 
   const moveDrag = (e: ReactPointerEvent<HTMLButtonElement>) => {
     if (!drag) return;
-    const y = e.clientY;
-    let to = rectsRef.current.findIndex((r) => y < r.top + r.height / 2);
-    if (to === -1) to = layers.length - 1;
-    to = Math.max(0, Math.min(layers.length - 1, to));
-    if (to !== drag.to) setDrag({ ...drag, to });
+    let idx = rectsRef.current.findIndex((r) => e.clientY < r.top + r.height / 2);
+    if (idx === -1) idx = rows.length - 1;
+    const row = rows[idx];
+    const overGroup = row?.kind === 'group' ? row.group.id : null;
+    if (idx !== drag.over || overGroup !== drag.overGroup) {
+      setDrag({ ...drag, over: idx, overGroup });
+    }
   };
 
   const endDrag = () => {
-    if (drag && drag.from !== drag.to) onReorder(drag.from, drag.to);
+    if (drag) {
+      const row = rows[drag.over];
+      if (drag.overGroup) {
+        onAssignGroup(drag.layerId, drag.overGroup);
+      } else if (row?.kind === 'layer') {
+        const from = layers.findIndex((l) => l.id === drag.layerId);
+        const to = layers.findIndex((l) => l.id === row.layer.id);
+        if (from >= 0 && to >= 0) onReorder(from, to);
+      }
+    }
     setDrag(null);
   };
 
   return (
     <Sheet title="图层">
-      {order.map((layer, i) => {
-        const isDragging = drag?.id === layer.id;
+      {rows.map((row, i) => {
+        if (row.kind === 'group') {
+          const hover = drag?.over === i;
+          return (
+            <div
+              key={row.group.id}
+              ref={(el) => {
+                rowRefs.current[i] = el;
+              }}
+              className={`layer group-row ${hover ? 'drop' : ''}`}
+              onClick={() => onToggleGroup(row.group.id)}
+              role="button"
+            >
+              <span className={`grp-chev ${row.group.expanded ? 'open' : ''}`}>›</span>
+              <Folder size={18} />
+              <div className="lname">
+                {row.group.name}
+                <div className="lmeta">{row.count} 个图层</div>
+              </div>
+            </div>
+          );
+        }
+        const layer = row.layer;
+        const isDragging = drag?.layerId === layer.id;
         return (
           <div
             key={layer.id}
             ref={(el) => {
               rowRefs.current[i] = el;
             }}
-            className={`layer ${layer.id === activeId ? 'sel' : ''} ${isDragging ? 'dragging' : ''}`}
-            onClick={() => onSelect(layers.findIndex((l) => l.id === layer.id))}
+            className={`layer ${layer.id === active?.id ? 'sel' : ''} ${
+              isDragging ? 'dragging' : ''
+            } ${layer.groupId ? 'in-group' : ''}`}
+            onClick={() => onSelect(layer.id)}
             role="button"
           >
             <button
               className="drag-handle"
               aria-label={`拖动 ${layer.name}`}
-              onPointerDown={(e) => startDrag(e, layers.findIndex((l) => l.id === layer.id))}
+              onPointerDown={(e) => startDrag(e, layer.id)}
               onPointerMove={moveDrag}
               onPointerUp={endDrag}
               onPointerCancel={endDrag}
@@ -536,34 +636,72 @@ export function LayersSheet({
               <span />
               <span />
             </button>
-            <div className="lthumb" />
+            <button
+              className="eye"
+              aria-label={layer.visible ? `隐藏 ${layer.name}` : `显示 ${layer.name}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggle(layer.id);
+              }}
+            >
+              {layer.visible ? <Eye size={18} /> : <EyeOff size={18} />}
+            </button>
             <div className="lname">
               {layer.name}
               <div className="lmeta">
-                {blend[layer.id] ?? '正常'} · {i === activeIndex ? '100%' : '80%'}
+                {BLEND_LABEL[layer.blend] ?? layer.blend} · {Math.round(layer.opacity * 100)}%
               </div>
+              {layer.id === active?.id && (
+                <input
+                  className="layer-opacity"
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={Math.round(layer.opacity * 100)}
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={(e) => onOpacity(layer.id, Number(e.target.value) / 100)}
+                  aria-label={`${layer.name} 不透明度`}
+                />
+              )}
             </div>
-            <select
-              value={blend[layer.id] ?? '正常'}
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => setBlend((m) => ({ ...m, [layer.id]: e.target.value }))}
-              aria-label={`${layer.name} 混合模式`}
-            >
-              {['正常', '正片叠底', '滤色', '颜色减淡', '叠加', '柔光'].map((m) => (
-                <option key={m}>{m}</option>
-              ))}
-            </select>
           </div>
         );
       })}
-      <div className="row" style={{ borderBottom: 0 }}>
-        <button className="chipbtn">＋ 新建</button>
-        <button className="chipbtn">复制</button>
-        <button className="chipbtn">合并</button>
-        <button className="chipbtn danger">删除</button>
+
+      <div className="row" style={{ paddingTop: 4 }}>
+        <span>混合模式</span>
+        <select
+          value={active?.blend ?? 'normal'}
+          onChange={(e) => active && onBlend(active.id, e.target.value as BlendMode)}
+          aria-label="当前图层混合模式"
+        >
+          {Object.entries(BLEND_LABEL).map(([value, label]) => (
+            <option key={value} value={value}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="row" style={{ borderBottom: 0, flexWrap: 'wrap' }}>
+        <button className="chipbtn" onClick={onAdd}>
+          ＋ 新建
+        </button>
+        <button className="chipbtn" onClick={onDuplicate}>
+          复制
+        </button>
+        <button className="chipbtn" onClick={onMerge}>
+          向下合并
+        </button>
+        <button className="chipbtn" onClick={onAddGroup}>
+          ＋ 文件夹
+        </button>
+        <button className="chipbtn danger" onClick={onDelete}>
+          删除
+        </button>
       </div>
       <p className="muted" style={{ margin: '4px 0 0' }}>
-        拖动左侧手柄调整上下顺序；绘制目前仍写入单个缓冲，多图层合成在 M1 接入。
+        拖动图层手柄排序；拖到文件夹行可移入；点文件夹折叠/展开。
       </p>
     </Sheet>
   );
@@ -619,5 +757,89 @@ export function SelectionBadge() {
     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: '#7CB342' }}>
       <Check size={14} /> 选区
     </span>
+  );
+}
+
+export function OverlaySheet({
+  overlay,
+  onImport,
+  onToggle,
+  onOpacity,
+  onRemove,
+}: {
+  overlay?: { dataUrl: string; opacity: number; visible: boolean };
+  onImport: (dataUrl: string) => void;
+  onToggle: () => void;
+  onOpacity: (v: number) => void;
+  onRemove: () => void;
+}) {
+  return (
+    <Sheet title="参考底图">
+      {overlay ? (
+        <>
+          <img
+            src={overlay.dataUrl}
+            alt="参考底图"
+            style={{
+              width: '100%',
+              borderRadius: 10,
+              opacity: overlay.opacity,
+              background: '#1d1d20',
+            }}
+          />
+          <div className="row">
+            <span>显示</span>
+            <button className="chipbtn" onClick={onToggle}>
+              {overlay.visible ? '已显示' : '已隐藏'}
+            </button>
+          </div>
+          <div className="slider-line">
+            <span className="slabel">透明</span>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={Math.round(overlay.opacity * 100)}
+              onChange={(e) => onOpacity(Number(e.target.value) / 100)}
+            />
+            <span className="sval">{Math.round(overlay.opacity * 100)}%</span>
+          </div>
+          <button className="chipbtn danger" onClick={onRemove} style={{ marginTop: 8 }}>
+            移除底图
+          </button>
+        </>
+      ) : (
+        <p className="muted" style={{ marginTop: 0 }}>
+          导入一张 UV 展开图（PNG/JPG）作为半透明底图，用于对位；不参与合成与导出。
+        </p>
+      )}
+      <label
+        className="primary"
+        style={{
+          display: 'grid',
+          placeItems: 'center',
+          height: 44,
+          marginTop: 12,
+          borderRadius: 22,
+          cursor: 'pointer',
+        }}
+      >
+        {overlay ? '更换图片' : '选择图片'}
+        <input
+          type="file"
+          accept="image/*"
+          hidden
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) {
+              const reader = new FileReader();
+              reader.onload = () => onImport(String(reader.result));
+              reader.readAsDataURL(f);
+            }
+            e.target.value = '';
+          }}
+        />
+      </label>
+    </Sheet>
   );
 }

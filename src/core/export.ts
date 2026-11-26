@@ -1,4 +1,5 @@
 ﻿import { createDemoTexture } from './pixels';
+import { compositeLayers, ensureLayers } from './layers';
 import type { Project } from './types';
 
 function downloadBlob(blob: Blob, filename: string): void {
@@ -27,7 +28,9 @@ export async function exportProjectPng(project: Project, scale = 1): Promise<voi
   if (!width || !height) throw new Error('empty canvas');
 
   const pixels =
-    project.pixels ?? createDemoTexture(Math.max(width, height), project.id);
+    project.layers && project.layers.length > 0
+      ? compositeLayers(ensureLayers(project), width, height)
+      : createDemoTexture(Math.max(width, height), project.id);
 
   const native = document.createElement('canvas');
   native.width = width;

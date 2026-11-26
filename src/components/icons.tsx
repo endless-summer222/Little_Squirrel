@@ -232,6 +232,21 @@ export const ArrowUpDown = (p: IconProps) => (
   </Svg>
 );
 
+
+export const Eye = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M2.8 12S6 6.5 12 6.5 21.2 12 21.2 12 18 17.5 12 17.5 2.8 12 2.8 12Z" />
+    <circle cx="12" cy="12" r="2.6" />
+  </Svg>
+);
+
+export const EyeOff = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4 5.5 20 19" />
+    <path d="M9.6 7.2A9.6 9.6 0 0 1 12 7c6 0 9.2 5 9.2 5a17 17 0 0 1-2.7 3.2M6.2 8.6A16.7 16.7 0 0 0 2.8 12S6 17 12 17c1 0 2-.2 2.8-.6" />
+  </Svg>
+);
+
 export const Trash = (p: IconProps) => (
   <Svg {...p}>
     <path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" />

@@ -1089,3 +1089,69 @@ input.hue-track::-webkit-slider-thumb {
   background: #34343a;
   opacity: 0.92;
 }
+.eye {
+  flex: none;
+  width: 30px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: #9a9aa0;
+}
+
+.eye:active {
+  background: #3a3a40;
+}
+
+.layer-opacity {
+  width: 100%;
+  margin-top: 2px;
+  height: 14px;
+}
+
+.layer-opacity::-webkit-slider-runnable-track {
+  height: 3px;
+  background: #4a4a50;
+}
+
+.layer-opacity::-webkit-slider-thumb {
+  width: 12px;
+  height: 12px;
+  margin-top: -4.5px;
+  border-width: 1px;
+}
+
+.viewport {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.group-row {
+  background: #2a2a2f;
+  gap: 8px;
+}
+
+.grp-chev {
+  width: 14px;
+  text-align: center;
+  color: #8a8a8e;
+  font-size: 18px;
+  line-height: 1;
+  transition: transform 140ms var(--ease);
+}
+
+.grp-chev.open {
+  transform: rotate(90deg);
+}
+
+.layer.in-group {
+  margin-left: 18px;
+}
+
+.layer.drop {
+  outline: 2px dashed var(--green);
+  outline-offset: -2px;
+}

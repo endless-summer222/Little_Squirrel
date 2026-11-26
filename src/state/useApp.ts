@@ -1,5 +1,7 @@
 import { create } from 'zustand';
-import type { Project } from '../core/types';
+import type { Layer, LayerGroup, Overlay, Project } from '../core/types';
+import { createLayer } from '../core/layers';
+import { createDemoTexture } from '../core/pixels';
 import {
   deleteProjects,
   loadProjects,
@@ -19,6 +21,7 @@ export type SheetKind =
   | 'layers'
   | 'selection'
   | 'effects'
+  | 'overlay'
   | null;
 
 interface AppState {
@@ -46,7 +49,13 @@ interface AppState {
   ) => void;
   createFolder: (name: string, folderId: string | null) => void;
   renameProject: (id: string, name: string) => void;
-  updateProjectPixels: (id: string, pixels: Uint8ClampedArray) => void;
+  updateProjectLayers: (
+    id: string,
+    layers: Layer[],
+    activeLayerId: string,
+    groups?: LayerGroup[],
+  ) => void;
+  updateProjectOverlay: (id: string, overlay: Overlay | undefined) => void;
   updateProjectPalette: (id: string, palette: string[]) => void;
   deleteProject: (id: string) => void;
   setSheet: (sheet: SheetKind) => void;
@@ -105,11 +114,24 @@ const persist = (project: Project) => {
 
 /** 兼容 v0.5 之前的旧工程（只有 size，没有 width/height） */
 function normalize(p: Project & { size?: number }): Project {
-  const side = p.width ?? p.height ?? p.size ?? 64;
+  const width = p.width ?? p.size ?? 64;
+  const height = p.height ?? p.size ?? 64;
+  const base: Project = { ...p, width, height };
+  const layers =
+    p.layers && p.layers.length > 0
+      ? p.layers
+      : [
+          createLayer(
+            width,
+            height,
+            '图层 1',
+            p.pixels ?? createDemoTexture(Math.max(width, height), p.id),
+          ),
+        ];
   return {
-    ...p,
-    width: p.width ?? p.size ?? side,
-    height: p.height ?? p.size ?? side,
+    ...base,
+    layers,
+    activeLayerId: p.activeLayerId ?? layers[0].id,
   };
 }
 
@@ -156,6 +178,7 @@ export const useApp = create<AppState>((set, get) => ({
 
   createProject: (width, height, name, folderId) => {
     const id = `p${Date.now().toString(36)}`;
+    const layer = createLayer(width, height, '图层 1');
     const project: Project = {
       id,
       name: name?.trim() || `未命名 ${get().projects.length + 1}`,
@@ -164,8 +187,8 @@ export const useApp = create<AppState>((set, get) => ({
       height,
       updatedAt: new Date().toISOString().slice(0, 10),
       folderId,
-      // 新建画布默认全透明，不再生成示例图案
-      pixels: new Uint8ClampedArray(width * height * 4),
+      layers: [layer],
+      activeLayerId: layer.id,
       palette: [],
     };
     persist(project);
@@ -179,6 +202,7 @@ export const useApp = create<AppState>((set, get) => ({
 
   importProject: (name, width, height, pixels, folderId) => {
     const id = `p${Date.now().toString(36)}`;
+    const layer = createLayer(width, height, '导入图层', pixels);
     const project: Project = {
       id,
       name: name.trim() || '导入的贴图',
@@ -187,7 +211,8 @@ export const useApp = create<AppState>((set, get) => ({
       height,
       updatedAt: new Date().toISOString().slice(0, 10),
       folderId,
-      pixels,
+      layers: [layer],
+      activeLayerId: layer.id,
       palette: [],
     };
     persist(project);
@@ -229,16 +254,30 @@ export const useApp = create<AppState>((set, get) => ({
     if (updated) persist(updated);
   },
 
-  updateProjectPixels: (id, pixels) => {
+  updateProjectLayers: (id, layers, activeLayerId, groups) => {
     let updated: Project | undefined;
     set((s) => ({
       projects: s.projects.map((p) => {
         if (p.id !== id) return p;
         updated = {
           ...p,
-          pixels,
+          layers,
+          activeLayerId,
+          groups: groups ?? p.groups,
           updatedAt: new Date().toISOString().slice(0, 10),
         };
+        return updated;
+      }),
+    }));
+    if (updated) persist(updated);
+  },
+
+  updateProjectOverlay: (id, overlay) => {
+    let updated: Project | undefined;
+    set((s) => ({
+      projects: s.projects.map((p) => {
+        if (p.id !== id) return p;
+        updated = { ...p, overlay };
         return updated;
       }),
     }));
