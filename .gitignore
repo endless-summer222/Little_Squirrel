@@ -1,0 +1,39 @@
+﻿node_modules/
+dist/
+dist-ssr/
+.pnpm-store/
+.vite/
+coverage/
+*.local
+.DS_Store
+Thumbs.db
+*.log
+
+# local toolchains / SDK / archives (not part of the app)
+.android-sdk/
+.jdk21/
+.jdk21-ms/
+.gradle-dist/
+.gradle-probe/
+*.zip
+
+# android build outputs
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/capacitor-cordova-android-plugins/build/
+ios/App/Pods/
+ios/App/build/
+
+# secrets / local env
+.env
+.env.*
+*.keystore
+*.jks
+*.p12
+android/.idea/
+.idea/
+*.iml
+# build artifact (attach to Releases instead)
+apk/

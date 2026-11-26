@@ -1,0 +1,15 @@
+// 强制所有工程（含 Capacitor 插件工程）优先走阿里云镜像，
+// 规避 repo.maven.apache.org 在本机 DNS 不可用的问题。
+gradle.projectsLoaded {
+    gradle.rootProject.allprojects { p ->
+        p.buildscript.repositories {
+            maven { url 'https://maven.aliyun.com/repository/google' }
+            maven { url 'https://maven.aliyun.com/repository/public' }
+            maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+        }
+        p.repositories {
+            maven { url 'https://maven.aliyun.com/repository/google' }
+            maven { url 'https://maven.aliyun.com/repository/public' }
+        }
+    }
+}
