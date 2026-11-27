@@ -130,19 +130,34 @@ export function morphMask(
       for (let x = 0; x < w; x += 1) {
         const idx = y * w + x;
         const self = cur[idx] > 0;
-        let hit = false;
-        for (let dy = -1; dy <= 1 && !hit; dy += 1) {
+        let all = true;
+        for (let dy = -1; dy <= 1 && all; dy += 1) {
           for (let dx = -1; dx <= 1; dx += 1) {
             const nx = x + dx;
             const ny = y + dy;
-            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-            if (cur[ny * w + nx]) {
-              hit = true;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h || !cur[ny * w + nx]) {
+              all = false;
               break;
             }
           }
         }
-        next[idx] = grow ? (self || hit ? 1 : 0) : self && hit ? 1 : 0;
+        if (grow) {
+          let any = false;
+          for (let dy = -1; dy <= 1 && !any; dy += 1) {
+            for (let dx = -1; dx <= 1; dx += 1) {
+              const nx = x + dx;
+              const ny = y + dy;
+              if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+              if (cur[ny * w + nx]) {
+                any = true;
+                break;
+              }
+            }
+          }
+          next[idx] = self || any ? 1 : 0;
+        } else {
+          next[idx] = self && all ? 1 : 0;
+        }
       }
     }
     cur = next;

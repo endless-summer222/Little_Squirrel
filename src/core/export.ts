@@ -2,6 +2,47 @@ import { createDemoTexture } from './pixels';
 import { compositeLayers, ensureLayers } from './layers';
 import type { Project } from './types';
 
+
+let worker: Worker | null = null;
+let seq = 0;
+const pending = new Map<number, (blob: Blob | null) => void>();
+
+function encodeInWorker(
+  pixels: Uint8ClampedArray,
+  w: number,
+  h: number,
+  scale: number,
+): Promise<Blob | null> {
+  return new Promise((resolve) => {
+    try {
+      if (!worker) {
+        worker = new Worker(new URL('../workers/image.worker.ts', import.meta.url), {
+          type: 'module',
+        });
+        worker.onmessage = (e: MessageEvent<{ id: number; blob?: Blob; error?: string }>) => {
+          const cb = pending.get(e.data.id);
+          if (cb) {
+            pending.delete(e.data.id);
+            cb(e.data.error ? null : e.data.blob ?? null);
+          }
+        };
+      }
+      const id = ++seq;
+      pending.set(id, resolve);
+      const copy = new Uint8ClampedArray(pixels);
+      worker.postMessage({ id, type: 'export', pixels: copy.buffer, w, h, scale }, [copy.buffer]);
+      window.setTimeout(() => {
+        if (pending.has(id)) {
+          pending.delete(id);
+          resolve(null);
+        }
+      }, 15000);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
 function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -28,28 +69,30 @@ async function renderBlob(project: Project, scale: number): Promise<{ blob: Blob
       ? compositeLayers(ensureLayers(project), width, height)
       : createDemoTexture(Math.max(width, height), project.id);
 
-  const native = document.createElement('canvas');
-  native.width = width;
-  native.height = height;
-  const nctx = native.getContext('2d');
-  if (!nctx) throw new Error('canvas unavailable');
-  nctx.putImageData(new ImageData(new Uint8ClampedArray(pixels), width, height), 0, 0);
+  let blob = await encodeInWorker(pixels, width, height, scale);
 
-  let output = native;
-  if (scale !== 1) {
-    const scaled = document.createElement('canvas');
-    scaled.width = width * scale;
-    scaled.height = height * scale;
-    const sctx = scaled.getContext('2d');
-    if (!sctx) throw new Error('canvas unavailable');
-    sctx.imageSmoothingEnabled = false;
-    sctx.drawImage(native, 0, 0, scaled.width, scaled.height);
-    output = scaled;
+  if (!blob) {
+    const native = document.createElement('canvas');
+    native.width = width;
+    native.height = height;
+    const nctx = native.getContext('2d');
+    if (!nctx) throw new Error('canvas unavailable');
+    nctx.putImageData(new ImageData(new Uint8ClampedArray(pixels), width, height), 0, 0);
+
+    let output = native;
+    if (scale !== 1) {
+      const scaled = document.createElement('canvas');
+      scaled.width = width * scale;
+      scaled.height = height * scale;
+      const sctx = scaled.getContext('2d');
+      if (!sctx) throw new Error('canvas unavailable');
+      sctx.imageSmoothingEnabled = false;
+      sctx.drawImage(native, 0, 0, scaled.width, scaled.height);
+      output = scaled;
+    }
+    blob = await new Promise<Blob | null>((resolve) => output.toBlob(resolve, 'image/png'));
   }
 
-  const blob = await new Promise<Blob | null>((resolve) =>
-    output.toBlob(resolve, 'image/png'),
-  );
   if (!blob) throw new Error('encode failed');
   const suffix = scale === 1 ? '' : `@${scale}x`;
   return { blob, filename: `${safeName(project.name)}${suffix}.png` };
@@ -73,7 +116,7 @@ function isNative(): boolean {
 }
 
 /**
- * 导出 PNG 并返回可展示的位置：Android 为 Documents/PixelUV/文件名，Web 为浏览器下载目录。
+ * 导出 PNG 并返回可展示的位置：Android 为 Documents/LittleSquirrel/文件名，Web 为浏览器下载目录。
  */
 export async function saveProjectPng(project: Project, scale = 1): Promise<string> {
   const { blob, filename } = await renderBlob(project, scale);
@@ -82,7 +125,7 @@ export async function saveProjectPng(project: Project, scale = 1): Promise<strin
     const { Filesystem, Directory } = await import('@capacitor/filesystem');
     const data = await blobToBase64(blob);
     const res = await Filesystem.writeFile({
-      path: `PixelUV/${filename}`,
+      path: `LittleSquirrel/${filename}`,
       data,
       directory: Directory.Documents,
       recursive: true,
@@ -93,7 +136,7 @@ export async function saveProjectPng(project: Project, scale = 1): Promise<strin
     } catch {
       // 用户取消分享不算失败
     }
-    return `Documents/PixelUV/${filename}`;
+    return `Documents/LittleSquirrel/${filename}`;
   }
 
   downloadBlob(blob, filename);

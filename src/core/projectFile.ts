@@ -56,12 +56,12 @@ export async function saveProjectFile(project: Project): Promise<string> {
     const { Filesystem, Directory } = await import('@capacitor/filesystem');
     const b64 = btoa(unescape(encodeURIComponent(text)));
     await Filesystem.writeFile({
-      path: `PixelUV/${filename}`,
+      path: `LittleSquirrel/${filename}`,
       data: b64,
       directory: Directory.Documents,
       recursive: true,
     });
-    return `Documents/PixelUV/${filename}`;
+    return `Documents/LittleSquirrel/${filename}`;
   }
   const blob = new Blob([text], { type: 'application/json' });
   const url = URL.createObjectURL(blob);

@@ -23,7 +23,7 @@ export type SelectShape =
   | { kind: 'lasso'; points: { x: number; y: number }[] }
   | { kind: 'wand'; x: number; y: number };
 
-export type SelectTool = 'rect' | 'ellipse' | 'lasso' | 'wand' | 'move';
+export type SelectTool = 'rect' | 'ellipse' | 'lasso' | 'polygon' | 'wand' | 'move';
 
 export type ToolId = 'pencil' | 'eraser' | 'bucket' | 'dropper' | 'shade' | 'select';
 
@@ -52,6 +52,9 @@ interface Props {
   gridStep: number;
   pixelPerfect: boolean;
   alphaLock: boolean;
+  dropSize: number;
+  gestureUndo: boolean;
+  gestureRedo: boolean;
   hand: boolean;
   selection: Selection | null;
   selPath: Path2D | null;
@@ -59,6 +62,7 @@ interface Props {
   selOffset: { x: number; y: number };
   bucketTolerance: number;
   contiguous: boolean;
+  bucketAll: boolean;
   onSelectShape: (shape: SelectShape) => void;
   onMoveStart: (x: number, y: number) => void;
   onMoveDelta: (dx: number, dy: number) => void;
@@ -120,6 +124,9 @@ export function CanvasStage({
   gridStep,
   pixelPerfect,
   alphaLock,
+  dropSize,
+  gestureUndo,
+  gestureRedo,
   hand,
   selection,
   selPath,
@@ -127,6 +134,7 @@ export function CanvasStage({
   selOffset,
   bucketTolerance,
   contiguous,
+  bucketAll,
   onSelectShape,
   onMoveStart,
   onMoveDelta,
@@ -266,6 +274,9 @@ export function CanvasStage({
           if (i === 0) ctx.moveTo(px, py);
           else ctx.lineTo(px, py);
         });
+        if (selTool === 'polygon') {
+          ctx.lineTo(shape.cur.x * zoom + pan.x, shape.cur.y * zoom + pan.y);
+        }
       }
       ctx.fillStyle = 'rgba(157,255,235,0.12)';
       ctx.fill();
@@ -300,7 +311,7 @@ export function CanvasStage({
       const x1 = Math.min(width, Math.ceil((vw - pan.x) / zoom));
       const y0 = Math.max(0, Math.floor(-pan.y / zoom / step) * step);
       const y1 = Math.min(height, Math.ceil((vh - pan.y) / zoom));
-      ctx.fillStyle = gridOn ? '#9DFFEB' : gridColor;
+      ctx.fillStyle = gridColor;
       ctx.globalAlpha = gridOn ? 0.55 : 0.2;
       const lw = gridOn ? 1.5 : 1;
       for (let x = x0; x <= x1; x += step) {
@@ -395,10 +406,15 @@ export function CanvasStage({
 
   const floodFill = (sx: number, sy: number) => {
     if (!activePixels) return;
-    const region = magicWand(activePixels, width, height, sx, sy, {
+    let samplePixels = activePixels;
+    if (bucketAll) {
+      const sctx = source.getContext('2d');
+      if (sctx) samplePixels = sctx.getImageData(0, 0, width, height).data;
+    }
+    const region = magicWand(samplePixels, width, height, sx, sy, {
       tolerance: bucketTolerance,
       contiguous,
-      sample: 'layer',
+      sample: bucketAll ? 'composite' : 'layer',
     });
     const fill = { ...parseHex(color), a: alpha };
     const b = boundsOf(region, width, height);
@@ -467,8 +483,30 @@ export function CanvasStage({
     if (tool === 'dropper') {
       const sctx = source.getContext('2d');
       if (!sctx) return;
-      const d = sctx.getImageData(x, y, 1, 1).data;
-      onPick(toHex({ r: d[0], g: d[1], b: d[2], a: d[3] }));
+      const n = Math.max(1, dropSize);
+      const half = Math.floor(n / 2);
+      const sx = Math.max(0, Math.min(width - n, x - half));
+      const sy = Math.max(0, Math.min(height - n, y - half));
+      const d = sctx.getImageData(sx, sy, n, n).data;
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      let a = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        r += d[i];
+        g += d[i + 1];
+        b += d[i + 2];
+        a += d[i + 3];
+      }
+      const count = d.length / 4;
+      onPick(
+        toHex({
+          r: Math.round(r / count),
+          g: Math.round(g / count),
+          b: Math.round(b / count),
+          a: Math.round(a / count),
+        }),
+      );
       return;
     }
     if (tool === 'bucket') {
@@ -477,6 +515,22 @@ export function CanvasStage({
       return;
     }
     if (tool === 'select') {
+      if (selTool === 'polygon') {
+        const t = toTexel(e.clientX, e.clientY);
+        const px = Math.max(0, Math.min(width - 1, t.x));
+        const py = Math.max(0, Math.min(height - 1, t.y));
+        if (shape && shape.points.length >= 3) {
+          const first = shape.points[0];
+          if (Math.hypot(px - first.x, py - first.y) <= 2) {
+            onSelectShape({ kind: 'lasso', points: shape.points });
+            setShape(null);
+            return;
+          }
+        }
+        const points = shape ? [...shape.points, { x: px, y: py }] : [{ x: px, y: py }];
+        setShape({ start: { x: px, y: py }, cur: { x: px, y: py }, points });
+        return;
+      }
       if (selTool === 'wand') {
         onSelectShape({ kind: 'wand', x, y });
         return;
@@ -584,8 +638,8 @@ export function CanvasStage({
       }
       const dur = performance.now() - g.downAt;
       if (g.max >= 2 && !g.moved && dur < 320) {
-        if (g.max === 2) onUndo();
-        else onRedo();
+        if (g.max === 2 && gestureUndo) onUndo();
+        else if (g.max >= 3 && gestureRedo) onRedo();
       } else if (g.max === 1 && !g.moved && !g.longFired && dur < 260) {
         const now = performance.now();
         const far = Math.hypot(e.clientX - g.lastX, e.clientY - g.lastY);
@@ -616,6 +670,8 @@ export function CanvasStage({
           onSelectShape({ kind: 'ellipse', rect: { x, y, w: rw, h: rh } });
         } else if (selTool === 'lasso' && shape.points.length > 2) {
           onSelectShape({ kind: 'lasso', points: shape.points });
+        } else if (selTool === 'polygon') {
+          return;
         }
         setShape(null);
       }

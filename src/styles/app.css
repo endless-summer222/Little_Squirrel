@@ -1474,3 +1474,71 @@ input.hue-track::-webkit-slider-thumb {
   background: #34343a;
   margin: 4px 6px;
 }
+
+
+.rot {
+  font-size: 20px;
+  line-height: 1;
+}
+
+
+.fps-meter {
+  position: absolute;
+  top: 44px;
+  right: 10px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #9DFFEB;
+  font-size: 11px;
+  z-index: 4;
+  pointer-events: none;
+}
+
+
+.card-menu {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: rgba(20, 20, 22, 0.72);
+  color: #dcdce0;
+  font-size: 18px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  z-index: 2;
+}
+
+.card.lift {
+  transform: scale(1.06);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55);
+  z-index: 5;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.card { position: relative; }
+
+
+
+.anchor-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 40px);
+  gap: 6px;
+  justify-content: center;
+}
+
+.anchor-cell {
+  width: 40px;
+  height: 32px;
+  border-radius: 6px;
+  background: #26262b;
+  border: 1px solid #3a3a40;
+}
+
+.anchor-cell.on {
+  background: var(--green);
+  border-color: var(--green);
+}

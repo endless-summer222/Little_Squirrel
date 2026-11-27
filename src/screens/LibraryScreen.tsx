@@ -1,4 +1,4 @@
-﻿import { useMemo, useRef, useState } from 'react';
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import { createDemoTexture } from '../core/pixels';
 import { compositeLayers, ensureLayers } from '../core/layers';
 import { saveProjectPng } from '../core/export';
@@ -22,54 +22,26 @@ import {
 } from './Sheets';
 import { SettingsScreen } from './SettingsScreen';
 
-type SortKey = 'date' | 'name' | 'size';
+type SortKey = 'custom' | 'date' | 'name' | 'size';
 
 const SORT_LABEL: Record<SortKey, string> = {
+  custom: '自定义',
   date: '时间',
   name: '名称',
   size: '尺寸',
 };
 
-function useLongPress(onLong: () => void) {
-  const timer = useRef<number | undefined>(undefined);
-  const fired = useRef(false);
-
-  const cancel = () => {
-    if (timer.current) {
-      window.clearTimeout(timer.current);
-      timer.current = undefined;
-    }
-  };
-
-  return {
-    handlers: {
-      onPointerDown: () => {
-        fired.current = false;
-        cancel();
-        timer.current = window.setTimeout(() => {
-          fired.current = true;
-          onLong();
-        }, 500);
-      },
-      onPointerUp: cancel,
-      onPointerLeave: cancel,
-      onPointerMove: cancel,
-      onContextMenu: (e: React.MouseEvent) => {
-        e.preventDefault();
-        onLong();
-      },
-    },
-    consume: () => {
-      if (fired.current) {
-        fired.current = false;
-        return true;
-      }
-      return false;
-    },
-  };
-}
-
-function FileCard({ project, onMenu }: { project: Project; onMenu: () => void }) {
+function FileCard({
+  project,
+  onMenu,
+  onDrag,
+  dragging,
+}: {
+  project: Project;
+  onMenu: () => void;
+  onDrag: (e: React.PointerEvent<HTMLDivElement>) => void;
+  dragging: boolean;
+}) {
   const openProject = useApp((s) => s.openProject);
   const pixels = useMemo(() => {
     if (project.layers && project.layers.length > 0) {
@@ -77,19 +49,16 @@ function FileCard({ project, onMenu }: { project: Project; onMenu: () => void })
     }
     return createDemoTexture(Math.max(project.width, project.height), project.id);
   }, [project]);
-  const press = useLongPress(onMenu);
 
   return (
     <div
-      className="card"
+      className={`card ${dragging ? 'lift' : ''}`}
       role="button"
       tabIndex={0}
+      data-project={project.id}
       aria-label={`编辑 ${project.name}`}
-      {...press.handlers}
-      onClick={() => {
-        if (press.consume()) return;
-        openProject(project.id);
-      }}
+      onPointerDown={onDrag}
+      onClick={() => openProject(project.id)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') openProject(project.id);
       }}
@@ -101,6 +70,16 @@ function FileCard({ project, onMenu }: { project: Project; onMenu: () => void })
         <div className="name">{project.name}</div>
         <div className="date">{project.updatedAt}</div>
       </div>
+      <button
+        className="card-menu"
+        aria-label="更多"
+        onClick={(e) => {
+          e.stopPropagation();
+          onMenu();
+        }}
+      >
+        ⋮
+      </button>
     </div>
   );
 }
@@ -109,23 +88,24 @@ function FolderCard({
   project,
   onOpen,
   onMenu,
+  onDrag,
+  dragging,
 }: {
   project: Project;
   onOpen: () => void;
   onMenu: () => void;
+  onDrag: (e: React.PointerEvent<HTMLDivElement>) => void;
+  dragging: boolean;
 }) {
-  const press = useLongPress(onMenu);
   return (
     <div
-      className="card folder-card"
+      className={`card folder-card ${dragging ? 'lift' : ''}`}
       role="button"
       tabIndex={0}
+      data-folder={project.id}
       aria-label={`打开文件夹 ${project.name}`}
-      {...press.handlers}
-      onClick={() => {
-        if (press.consume()) return;
-        onOpen();
-      }}
+      onPointerDown={onDrag}
+      onClick={onOpen}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') onOpen();
       }}
@@ -137,6 +117,16 @@ function FolderCard({
         <div className="name">{project.name}</div>
         <div className="date">文件夹</div>
       </div>
+      <button
+        className="card-menu"
+        aria-label="更多"
+        onClick={(e) => {
+          e.stopPropagation();
+          onMenu();
+        }}
+      >
+        ⋮
+      </button>
     </div>
   );
 }
@@ -161,8 +151,57 @@ export function LibraryScreen() {
   const importRef = useRef<HTMLInputElement>(null);
   const projectRef = useRef<HTMLInputElement>(null);
   const importFullProject = useApp((s) => s.importFullProject);
+  const moveProjectToFolder = useApp((s) => s.moveProjectToFolder);
+  const reorderProjects = useApp((s) => s.reorderProjects);
   const folder = projects.find((p) => p.id === folderId) ?? null;
   const menuProject = projects.find((p) => p.id === menuId) ?? null;
+  const [dragId, setDragId] = useState<string | null>(null);
+  const dragTimer = useRef(0);
+  const dragPos = useRef({ x: 0, y: 0 });
+
+  const startDrag = (id: string) => (e: React.PointerEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).closest('.card-menu')) return;
+    dragPos.current = { x: e.clientX, y: e.clientY };
+    window.clearTimeout(dragTimer.current);
+    dragTimer.current = window.setTimeout(() => {
+      setDragId(id);
+      if (navigator.vibrate) navigator.vibrate(8);
+    }, 220);
+  };
+
+  useEffect(() => {
+    if (!dragId) return;
+    const move = (e: PointerEvent) => {
+      dragPos.current = { x: e.clientX, y: e.clientY };
+    };
+    const up = () => {
+      const el = document
+        .elementFromPoint(dragPos.current.x, dragPos.current.y)
+        ?.closest('[data-folder],[data-project]') as HTMLElement | null;
+      const folderId2 = el?.dataset.folder ?? null;
+      const projectId2 = el?.dataset.project ?? null;
+      if (folderId2 && dragId !== folderId2) {
+        moveProjectToFolder(dragId, folderId2);
+        setSortKey('custom');
+      } else if (projectId2 && projectId2 !== dragId) {
+        const ids = projects
+          .filter((p) => p.folderId === folderId)
+          .map((p) => p.id)
+          .filter((id) => id !== dragId);
+        const idx = ids.indexOf(projectId2);
+        ids.splice(idx < 0 ? ids.length : idx, 0, dragId);
+        reorderProjects(ids);
+        setSortKey('custom');
+      }
+      setDragId(null);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up, { once: true });
+    return () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+  }, [dragId, projects, folderId]);
 
   const list = useMemo(() => {
     const kw = query.trim().toLowerCase();
@@ -174,6 +213,9 @@ export function LibraryScreen() {
       if (a.kind !== b.kind) return a.kind === 'folder' ? -1 : 1;
       if (sortKey === 'name') return a.name.localeCompare(b.name, 'zh') * dir;
       if (sortKey === 'size') return (a.width * a.height - b.width * b.height) * dir;
+      if (sortKey === 'custom') {
+        return (a.order ?? 1e9) - (b.order ?? 1e9) || b.updatedAt.localeCompare(a.updatedAt);
+      }
       return a.updatedAt.localeCompare(b.updatedAt) * dir;
     });
   }, [projects, folderId, query, sortKey, sortAsc]);
@@ -183,12 +225,9 @@ export function LibraryScreen() {
     try {
       const bitmap = await createImageBitmap(file);
       const maxSide = Math.max(bitmap.width, bitmap.height);
-      const minSide = Math.min(bitmap.width, bitmap.height);
-      let scale = 1;
-      if (maxSide > 1024) scale = 1024 / maxSide;
-      if (minSide * scale < 32) scale = 32 / minSide;
-      const w = Math.min(1024, Math.max(32, Math.round(bitmap.width * scale)));
-      const h = Math.min(1024, Math.max(32, Math.round(bitmap.height * scale)));
+      const scale = maxSide > 1024 ? 1024 / maxSide : 1;
+      const w = Math.max(1, Math.round(bitmap.width * scale));
+      const h = Math.max(1, Math.round(bitmap.height * scale));
       const cv = document.createElement('canvas');
       cv.width = w;
       cv.height = h;
@@ -278,9 +317,11 @@ export function LibraryScreen() {
                   project={p}
                   onOpen={() => setFolderId(p.id)}
                   onMenu={() => setMenuId(p.id)}
+                  onDrag={startDrag(p.id)}
+                  dragging={dragId === p.id}
                 />
               ) : (
-                <FileCard key={p.id} project={p} onMenu={() => setMenuId(p.id)} />
+                <FileCard key={p.id} project={p} onMenu={() => setMenuId(p.id)} onDrag={startDrag(p.id)} dragging={dragId === p.id} />
               ),
             )}
           </div>

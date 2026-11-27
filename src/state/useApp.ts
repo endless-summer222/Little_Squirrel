@@ -24,6 +24,8 @@ export type SheetKind =
   | 'overlay'
   | 'grid'
   | 'export'
+  | 'resizeCanvas'
+  | 'resizeImage'
   | null;
 
 interface AppState {
@@ -60,6 +62,10 @@ interface AppState {
   updateProjectOverlay: (id: string, overlay: Overlay | undefined) => void;
   importFullProject: (project: Project) => void;
   updateProjectPalette: (id: string, palette: string[]) => void;
+  updateProjectColor: (id: string, color: string, alpha: number) => void;
+  resizeProject: (id: string, width: number, height: number, layers: Layer[]) => void;
+  moveProjectToFolder: (id: string, folderId: string | null) => void;
+  reorderProjects: (ids: string[]) => void;
   deleteProject: (id: string) => void;
   setSheet: (sheet: SheetKind) => void;
   showToast: (message: string) => void;
@@ -286,6 +292,56 @@ export const useApp = create<AppState>((set, get) => ({
       projects: s.projects.map((p) => {
         if (p.id !== id) return p;
         updated = { ...p, overlay };
+        return updated;
+      }),
+    }));
+    if (updated) persist(updated);
+  },
+
+  moveProjectToFolder: (id, folderId) => {
+    let updated: Project | undefined;
+    set((s) => ({
+      projects: s.projects.map((p) => {
+        if (p.id !== id) return p;
+        updated = { ...p, folderId };
+        return updated;
+      }),
+    }));
+    if (updated) persist(updated);
+  },
+
+  reorderProjects: (ids) => {
+    const orderMap = new Map(ids.map((id, i) => [id, i]));
+    const changed: Project[] = [];
+    set((s) => ({
+      projects: s.projects.map((p) => {
+        if (!orderMap.has(p.id)) return p;
+        const next = { ...p, order: orderMap.get(p.id) };
+        changed.push(next);
+        return next;
+      }),
+    }));
+    changed.forEach((p) => persist(p));
+  },
+
+  resizeProject: (id, width, height, layers) => {
+    let updated: Project | undefined;
+    set((s) => ({
+      projects: s.projects.map((p) => {
+        if (p.id !== id) return p;
+        updated = { ...p, width, height, layers, updatedAt: new Date().toISOString().slice(0, 10) };
+        return updated;
+      }),
+    }));
+    if (updated) persist(updated);
+  },
+
+  updateProjectColor: (id, color, alpha) => {
+    let updated: Project | undefined;
+    set((s) => ({
+      projects: s.projects.map((p) => {
+        if (p.id !== id) return p;
+        updated = { ...p, color, alpha };
         return updated;
       }),
     }));

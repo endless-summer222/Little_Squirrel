@@ -50,11 +50,14 @@ export interface Project {
   height: number;
   updatedAt: string;
   folderId: string | null;
+  order?: number;
   layers?: Layer[];
   activeLayerId?: string;
   groups?: LayerGroup[];
   overlay?: Overlay;
   palette?: string[];
+  color?: string;
+  alpha?: number;
   /** 旧版本（单缓冲）兼容字段 */
   pixels?: Uint8ClampedArray;
 }

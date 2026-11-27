@@ -31,12 +31,10 @@ import {
   Eraser,
   Help,
   LayersIcon,
+  More,
   Marquee,
-  Overlay,
   Pencil,
   Redo,
-  Share,
-  Sparkles,
   Undo,
 } from '../components/icons';
 import { adjustPixel, cloneBuffer, parseHex, toHex } from '../core/pixels';
@@ -71,9 +69,11 @@ import {
   ExportSheet,
   GridSheet,
   LayersSheet,
+  ResizeSheet,
   OverlaySheet,
 } from './Sheets';
 import { saveProjectPng } from '../core/export';
+import { loadSettings, saveSettings } from '../core/settings';
 
 const DEFAULT_SWATCHES = ['#1F2937', '#111827', '#0B1220', '#0F172A', '#4B5563', '#94A3B8'];
 const MAX_PALETTE = 64;
@@ -109,22 +109,31 @@ function DropMenu({
   open,
   onClose,
   children,
+  direction = 'up',
 }: {
   anchorRef: RefObject<HTMLButtonElement | null>;
   open: boolean;
   onClose: () => void;
   children: ReactNode;
+  direction?: 'up' | 'down';
 }) {
   if (!open) return null;
   const r = anchorRef.current?.getBoundingClientRect();
   const left = Math.max(8, Math.min(r?.left ?? 8, window.innerWidth - 172));
-  const top = (r?.top ?? 240) - 8;
+  const up = direction === 'up';
+  const top = up ? (r?.top ?? 240) - 8 : (r?.bottom ?? 80) + 8;
   return createPortal(
     <>
       <div className="mode-backdrop" onClick={onClose} />
       <div
         className="mode-menu"
-        style={{ position: 'fixed', left, top, bottom: 'auto', transform: 'translateY(-100%)' }}
+        style={{
+          position: 'fixed',
+          left,
+          top,
+          bottom: 'auto',
+          transform: up ? 'translateY(-100%)' : 'none',
+        }}
       >
         {children}
       </div>
@@ -157,7 +166,9 @@ export function EditorScreen() {
   const closeProject = useApp((s) => s.closeProject);
   const updateProjectLayers = useApp((s) => s.updateProjectLayers);
   const updateProjectOverlay = useApp((s) => s.updateProjectOverlay);
+  const resizeProject = useApp((s) => s.resizeProject);
   const updateProjectPalette = useApp((s) => s.updateProjectPalette);
+  const updateProjectColor = useApp((s) => s.updateProjectColor);
   const showToast = useApp((s) => s.showToast);
 
   const width = project?.width ?? 64;
@@ -176,8 +187,8 @@ export function EditorScreen() {
   const active = activeLayer(layers, activeId);
   const activeIndex = Math.max(0, layers.findIndex((l) => l.id === active?.id));
 
-  const [color, setColor] = useState('#1F2937');
-  const [alpha, setAlpha] = useState(255);
+  const [color, setColor] = useState(() => project?.color ?? '#1F2937');
+  const [alpha, setAlpha] = useState(() => project?.alpha ?? 255);
   const [palette, setPalette] = useState<string[]>(() => project?.palette ?? []);
   const paletteRef = useRef(palette);
   paletteRef.current = palette;
@@ -190,6 +201,8 @@ export function EditorScreen() {
 
   const [tool, setTool] = useState<ToolId>('pencil');
   const [hand, setHand] = useState(false);
+  const [dropSize, setDropSize] = useState(1);
+  const [bucketAll, setBucketAll] = useState(false);
   const handTimer = useRef(0);
   const [brush, setBrush] = useState(1);
   const [zoom, setZoom] = useState(() => {
@@ -203,6 +216,28 @@ export function EditorScreen() {
   const [vp, setVp] = useState({ w: 0, h: 0 });
   const strokeActive = useRef(false);
   const [version, setVersion] = useState(0);
+
+  useEffect(() => {
+    if (!loadSettings().perfFps) {
+      setFps(0);
+      return;
+    }
+    let frames = 0;
+    let last = performance.now();
+    let raf = 0;
+    const loop = () => {
+      frames += 1;
+      const now = performance.now();
+      if (now - last >= 1000) {
+        setFps(Math.round((frames * 1000) / (now - last)));
+        frames = 0;
+        last = now;
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []);
   const [pixelPerfect, setPixelPerfect] = useState(true);
   const [threshold, setThreshold] = useState(0);
   const [contiguous, setContiguous] = useState(true);
@@ -212,14 +247,18 @@ export function EditorScreen() {
   const [selMode, setSelMode] = useState<SelMode>('new');
   const [modeMenu, setModeMenu] = useState(false);
   const [toolMenu, setToolMenu] = useState(false);
+  const [moreMenu, setMoreMenu] = useState(false);
+  const moreBtnRef = useRef<HTMLButtonElement>(null);
+  const wandWorker = useRef<Worker | null>(null);
+  const wandSeq = useRef(0);
+  const wandPending = useRef(new Map<number, (mask: Uint8Array | null) => void>());
+  const [fps, setFps] = useState(0);
   const toolBtnRef = useRef<HTMLButtonElement>(null);
   const modeBtnRef = useRef<HTMLButtonElement>(null);
   const [gridColor, setGridColor] = useState(() =>
     typeof localStorage === 'undefined' ? '#FFFFFF' : localStorage.getItem('pixeluv.gridColor') ?? '#FFFFFF',
   );
-  const [gridOn, setGridOn] = useState(() =>
-    typeof localStorage === 'undefined' ? false : localStorage.getItem('pixeluv.gridOn') === '1',
-  );
+  const [gridOn, setGridOn] = useState(() => loadSettings().gridDefault);
   const [gridStep, setGridStep] = useState(() => {
     const v = typeof localStorage === 'undefined' ? 1 : Number(localStorage.getItem('pixeluv.gridStep'));
     return [1, 2, 4, 8, 16, 32].includes(v) ? v : 1;
@@ -267,8 +306,9 @@ export function EditorScreen() {
   };
 
   const trimUndo = () => {
-    const MAX = 100;
-    const LIMIT = 64 * 1024 * 1024;
+    const cfg = loadSettings();
+    const MAX = cfg.undoSteps;
+    const LIMIT = cfg.undoMB * 1024 * 1024;
     let bytes = undoRef.current.reduce((n, s) => n + snapBytes(s), 0);
     while (undoRef.current.length > MAX || (bytes > LIMIT && undoRef.current.length > 1)) {
       const dropped = undoRef.current.shift();
@@ -492,10 +532,11 @@ export function EditorScreen() {
   };
 
   const rememberColor = (hex: string) => {
-    if (paletteRef.current.includes(hex)) return;
-    const next = [hex, ...paletteRef.current].slice(0, MAX_PALETTE);
+    const exists = paletteRef.current.includes(hex);
+    const next = [hex, ...paletteRef.current.filter((c) => c !== hex)].slice(0, MAX_PALETTE);
     setPalette(next);
     if (project) updateProjectPalette(project.id, next);
+    if (!exists) return;
   };
 
   const handleDirty = (rect: Rect) => {
@@ -505,7 +546,7 @@ export function EditorScreen() {
     setVersion((v) => v + 1);
   };
 
-  const applyNoise = (amount: number) => {
+  const applyNoise = (amount: number, mode: 'color' | 'mono') => {
     if (!active || active.locked) return;
     undoRef.current.push({ kind: 'layer', id: active.id, pixels: cloneBuffer(active.pixels) });
     redoRef.current = [];
@@ -514,10 +555,17 @@ export function EditorScreen() {
     const strength = (amount / 100) * 90;
     for (let i = 0; i < buf.length; i += 4) {
       if (buf[i + 3] === 0) continue;
-      const d = (Math.random() * 2 - 1) * strength;
-      buf[i] = Math.max(0, Math.min(255, buf[i] + d));
-      buf[i + 1] = Math.max(0, Math.min(255, buf[i + 1] + d));
-      buf[i + 2] = Math.max(0, Math.min(255, buf[i + 2] + d));
+      if (selection && !selection.mask[i / 4]) continue;
+      if (mode === 'mono') {
+        const d = (Math.random() * 2 - 1) * strength;
+        buf[i] = Math.max(0, Math.min(255, buf[i] + d));
+        buf[i + 1] = Math.max(0, Math.min(255, buf[i + 1] + d));
+        buf[i + 2] = Math.max(0, Math.min(255, buf[i + 2] + d));
+      } else {
+        buf[i] = Math.max(0, Math.min(255, buf[i] + (Math.random() * 2 - 1) * strength));
+        buf[i + 1] = Math.max(0, Math.min(255, buf[i + 1] + (Math.random() * 2 - 1) * strength));
+        buf[i + 2] = Math.max(0, Math.min(255, buf[i + 2] + (Math.random() * 2 - 1) * strength));
+      }
     }
     rebuild(layers);
     setSheet(null);
@@ -538,6 +586,13 @@ export function EditorScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layers, activeId, groups]);
 
+  useEffect(() => {
+    if (!project) return;
+    const t = window.setTimeout(() => updateProjectColor(project.id, color, alpha), 400);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [color, alpha]);
+
   const saveAndClose = () => {
     if (project) updateProjectLayers(project.id, layers, active.id, groups);
     closeProject();
@@ -556,6 +611,54 @@ export function EditorScreen() {
     const next = layers.map((l) => (l.id === id ? { ...l, name } : l));
     setLayers(next);
     rebuild(next);
+  };
+
+  const applyResize = (nw: number, nh: number, mode: 'canvas' | 'image', anchor: string) => {
+    const next = layers.map((l) => {
+      const buf = new Uint8ClampedArray(nw * nh * 4);
+      if (mode === 'canvas') {
+        const ax = anchor.includes('c') ? Math.round((width - nw) / 2) : anchor.includes('r') ? width - nw : 0;
+        const ay = anchor.includes('m') ? Math.round((height - nh) / 2) : anchor.includes('b') ? height - nh : 0;
+        for (let y = 0; y < nh; y += 1) {
+          for (let x = 0; x < nw; x += 1) {
+            const sx = x + ax;
+            const sy = y + ay;
+            if (sx < 0 || sy < 0 || sx >= width || sy >= height) continue;
+            const si = (sy * width + sx) * 4;
+            const di = (y * nw + x) * 4;
+            buf[di] = l.pixels[si];
+            buf[di + 1] = l.pixels[si + 1];
+            buf[di + 2] = l.pixels[si + 2];
+            buf[di + 3] = l.pixels[si + 3];
+          }
+        }
+      } else {
+        for (let y = 0; y < nh; y += 1) {
+          const sy = Math.min(height - 1, Math.floor((y * height) / nh));
+          for (let x = 0; x < nw; x += 1) {
+            const sx = Math.min(width - 1, Math.floor((x * width) / nw));
+            const si = (sy * width + sx) * 4;
+            const di = (y * nw + x) * 4;
+            buf[di] = l.pixels[si];
+            buf[di + 1] = l.pixels[si + 1];
+            buf[di + 2] = l.pixels[si + 2];
+            buf[di + 3] = l.pixels[si + 3];
+          }
+        }
+      }
+      return { ...l, pixels: buf };
+    });
+    setLayers(next);
+    layersRef.current = next;
+    setSelection(null);
+    setSelPath(null);
+    setFloating(null);
+    floatingRef.current = null;
+    syncFloatCanvas(null);
+    if (project) resizeProject(project.id, nw, nh, next);
+    setSheet(null);
+    setVersion((v) => v + 1);
+    showToast(mode === 'canvas' ? `画布已改为 ${nw}×${nh}` : `图像已缩放为 ${nw}×${nh}`);
   };
 
   const clearLayer = () => {
@@ -673,11 +776,42 @@ export function EditorScreen() {
     else if (shape.kind === 'ellipse') next = ellipseMask(width, height, shape.rect);
     else if (shape.kind === 'lasso') next = polygonMask(width, height, shape.points);
     else {
-      next = magicWand(active.pixels, width, height, shape.x, shape.y, {
-        tolerance: Math.round(threshold * 2.55),
-        contiguous,
-        sample: 'layer',
-      });
+      const cctx = composite.getContext('2d');
+      const data = cctx ? cctx.getImageData(0, 0, width, height).data : active.pixels;
+      const tol = Math.round(threshold * 2.55);
+      const baseMask = selection?.mask ?? null;
+      const mode = selMode;
+      const apply = (mask: Uint8Array | null) => {
+        if (!mask) return;
+        setSelMask(combineMask(baseMask, mask, mode));
+      };
+      try {
+        if (!wandWorker.current) {
+          wandWorker.current = new Worker(new URL('../workers/image.worker.ts', import.meta.url), {
+            type: 'module',
+          });
+          wandWorker.current.onmessage = (ev: MessageEvent<{ id: number; mask?: ArrayBuffer }>) => {
+            const cb = wandPending.current.get(ev.data.id);
+            if (!cb) return;
+            wandPending.current.delete(ev.data.id);
+            cb(ev.data.mask ? new Uint8Array(ev.data.mask) : null);
+          };
+        }
+        const id = ++wandSeq.current;
+        wandPending.current.set(id, apply);
+        const copy = new Uint8ClampedArray(data);
+        wandWorker.current.postMessage(
+          { id, type: 'wand', pixels: copy.buffer, w: width, h: height, x: shape.x, y: shape.y, tolerance: tol, contiguous },
+          [copy.buffer],
+        );
+        return;
+      } catch {
+        next = magicWand(new Uint8ClampedArray(data), width, height, shape.x, shape.y, {
+          tolerance: tol,
+          contiguous,
+          sample: 'composite',
+        });
+      }
     }
     setSelMask(combineMask(selection?.mask ?? null, next, selMode));
   };
@@ -842,6 +976,22 @@ export function EditorScreen() {
     const b = selection.bounds;
     const content = { x: b.x, y: b.y, w: b.w, h: b.h, pixels: extractMasked(b.x, b.y, b.w, b.h, selection.mask) };
     setClipboard(content);
+    try {
+      const cv = document.createElement('canvas');
+      cv.width = b.w;
+      cv.height = b.h;
+      const cctx = cv.getContext('2d');
+      if (cctx && navigator.clipboard && typeof ClipboardItem !== 'undefined') {
+        cctx.putImageData(new ImageData(new Uint8ClampedArray(content.pixels), b.w, b.h), 0, 0);
+        cv.toBlob((blob) => {
+          if (blob) {
+            void navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]).catch(() => {});
+          }
+        }, 'image/png');
+      }
+    } catch {
+      // 系统剪贴板不可用时只保留内部剪贴板
+    }
     if (cut) {
       pushLayerSnap();
       const mask = selection.mask;
@@ -873,6 +1023,37 @@ export function EditorScreen() {
     showToast('已粘贴为新图层');
   };
 
+  const pasteFromSystem = async () => {
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.read) throw new Error('unsupported');
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        const type = item.types.find((t) => t.startsWith('image/'));
+        if (!type) continue;
+        const blob = await item.getType(type);
+        const bmp = await createImageBitmap(blob);
+        pushDoc();
+        const layer = createLayer(width, height, '系统粘贴', new Uint8ClampedArray(width * height * 4));
+        const cv = document.createElement('canvas');
+        cv.width = width;
+        cv.height = height;
+        const ctx = cv.getContext('2d');
+        if (ctx) {
+          ctx.imageSmoothingEnabled = false;
+          ctx.drawImage(bmp, 0, 0);
+          layer.pixels.set(ctx.getImageData(0, 0, width, height).data);
+        }
+        bmp.close();
+        applyDoc([layer, ...layers], layer.id);
+        showToast('已从系统剪贴板粘贴');
+        return;
+      }
+      showToast('系统剪贴板里没有图片');
+    } catch {
+      showToast('系统剪贴板不可用');
+    }
+  };
+
   const transformSelection = (kind: 'flipH' | 'flipV') => {
     if (!active || !selection) return;
     pushLayerSnap();
@@ -900,6 +1081,46 @@ export function EditorScreen() {
         const sy = kind === 'flipV' ? b.h - 1 - y : y;
         if (!selection.mask[(b.y + sy) * width + (b.x + sx)]) continue;
         nm[(b.y + y) * width + (b.x + x)] = 1;
+      }
+    }
+    setSelMask(nm);
+    paintLayerCanvas(active);
+    recomposite(fullRect(width, height), layers);
+    setVersion((v) => v + 1);
+  };
+
+  const rotateSelection = (clockwise: boolean) => {
+    if (!active || !selection) return;
+    pushLayerSnap();
+    const b = selection.bounds;
+    const src = extractMasked(b.x, b.y, b.w, b.h, selection.mask);
+    const nw = b.h;
+    const nh = b.w;
+    const out = new Uint8ClampedArray(nw * nh * 4);
+    const nm = new Uint8Array(width * height);
+    for (let y = 0; y < nh; y += 1) {
+      for (let x = 0; x < nw; x += 1) {
+        const sx = clockwise ? y : b.w - 1 - y;
+        const sy = clockwise ? b.h - 1 - x : x;
+        const si = (sy * b.w + sx) * 4;
+        const di = (y * nw + x) * 4;
+        out[di] = src[si];
+        out[di + 1] = src[si + 1];
+        out[di + 2] = src[si + 2];
+        out[di + 3] = src[si + 3];
+      }
+    }
+    clearMaskPixels(active.pixels, selection.mask);
+    blitContent(active.pixels, { x: b.x, y: b.y, w: nw, h: nh, pixels: out });
+    for (let y = 0; y < nh; y += 1) {
+      for (let x = 0; x < nw; x += 1) {
+        const sx = clockwise ? y : b.w - 1 - y;
+        const sy = clockwise ? b.h - 1 - x : x;
+        if (!selection.mask[(b.y + sy) * width + (b.x + sx)]) continue;
+        const gx = b.x + x;
+        const gy = b.y + y;
+        if (gx < 0 || gy < 0 || gx >= width || gy >= height) continue;
+        nm[gy * width + gx] = 1;
       }
     }
     setSelMask(nm);
@@ -1097,6 +1318,47 @@ export function EditorScreen() {
     setVersion((v) => v + 1);
   };
 
+  const rotateFloating = (clockwise: boolean) => {
+    if (!floating) return;
+    const { w, h, pixels, mask } = floating;
+    const nw = h;
+    const nh = w;
+    const out = new Uint8ClampedArray(pixels.length);
+    const mout = new Uint8Array(mask.length);
+    for (let y = 0; y < nh; y += 1) {
+      for (let x = 0; x < nw; x += 1) {
+        const sx = clockwise ? y : w - 1 - y;
+        const sy = clockwise ? h - 1 - x : x;
+        const si = (sy * w + sx) * 4;
+        const di = (y * nw + x) * 4;
+        out[di] = pixels[si];
+        out[di + 1] = pixels[si + 1];
+        out[di + 2] = pixels[si + 2];
+        out[di + 3] = pixels[si + 3];
+        mout[y * nw + x] = mask[sy * w + sx];
+      }
+    }
+    const f = { ...floating, w: nw, h: nh, pixels: out, mask: mout };
+    setFloating(f);
+    floatingRef.current = f;
+    syncFloatCanvas(f);
+    const gm = new Uint8Array(width * height);
+    for (let y = 0; y < nh; y += 1) {
+      for (let x = 0; x < nw; x += 1) {
+        if (!mout[y * nw + x]) continue;
+        const gx = f.x + x;
+        const gy = f.y + y;
+        if (gx < 0 || gy < 0 || gx >= width || gy >= height) continue;
+        gm[gy * width + gx] = 1;
+      }
+    }
+    const sel = makeSelection(gm, width, height);
+    setSelection(sel.bounds.w ? sel : null);
+    setSelPath(sel.bounds.w ? selectionPath(gm, width, height) : null);
+    recomposite(fullRect(width, height), layers);
+    setVersion((v) => v + 1);
+  };
+
   const cancelRecentStroke = () => {
     if (!strokeActive.current) return;
     const snap = undoRef.current.pop();
@@ -1217,19 +1479,19 @@ export function EditorScreen() {
         >
           <Grid size={21} />
         </button>
-        <button className="icon-btn" aria-label="导出" onClick={() => setSheet('export')}>
-          <Share size={21} />
-        </button>
-        <button
-          className="icon-btn"
-          aria-label="参考底图"
-          onClick={() => setSheet('overlay')}
-        >
-          <Overlay size={22} />
-        </button>
-        <button className="icon-btn" aria-label="效果" onClick={() => setSheet('effects')}>
-          <Sparkles size={22} />
-        </button>
+        <div className="mode-wrap">
+          <button ref={moreBtnRef} className="icon-btn" aria-label="更多" onClick={() => setMoreMenu((v) => !v)}>
+            <More size={21} />
+          </button>
+          <DropMenu anchorRef={moreBtnRef} open={moreMenu} onClose={() => setMoreMenu(false)} direction="down">
+            <button onClick={() => { setMoreMenu(false); setSheet('overlay'); }}>参考底图</button>
+            <button onClick={() => { setMoreMenu(false); setSheet('effects'); }}>噪点 / 效果</button>
+            <button onClick={() => { setMoreMenu(false); setSheet('export'); }}>导出 PNG</button>
+            <div className="mode-divider" />
+            <button onClick={() => { setMoreMenu(false); setSheet('resizeCanvas'); }}>修改画布大小</button>
+            <button onClick={() => { setMoreMenu(false); setSheet('resizeImage'); }}>修改图像大小</button>
+          </DropMenu>
+        </div>
         <button className="icon-btn accent" aria-label="保存" onClick={saveAndClose}>
           <Check size={23} />
         </button>
@@ -1256,6 +1518,9 @@ export function EditorScreen() {
             gridStep={gridStep}
             pixelPerfect={pixelPerfect}
             alphaLock={active?.alphaLock ?? false}
+            dropSize={dropSize}
+            gestureUndo={loadSettings().gestureUndo}
+            gestureRedo={loadSettings().gestureRedo}
             hand={hand}
             selection={selection}
             selPath={selPath}
@@ -1263,6 +1528,7 @@ export function EditorScreen() {
             selOffset={selOffset}
             bucketTolerance={Math.round(threshold * 2.55)}
             contiguous={contiguous}
+            bucketAll={bucketAll}
             onSelectShape={handleSelectShape}
             onMoveStart={onMoveStart}
             onMoveDelta={onMoveDelta}
@@ -1292,6 +1558,7 @@ export function EditorScreen() {
               showToast(`已取色 ${hex}`);
             }}
           />
+          {fps > 0 && <div className="fps-meter">{fps} FPS</div>}
           {tool === 'select' && selection && (
             <button className="canvas-clear" onClick={selClear}>
               清除选区
@@ -1316,7 +1583,7 @@ export function EditorScreen() {
               {selTool === 'lasso' && <Lasso size={17} />}
               {selTool === 'wand' && <Wand size={17} />}
               {selTool === 'move' && <Move size={17} />}
-              <span>{{ rect: '矩形', ellipse: '椭圆', lasso: '套索', wand: '魔棒', move: '移动' }[selTool]}</span>
+              <span>{{ rect: '矩形', ellipse: '椭圆', lasso: '套索', polygon: '多边形', wand: '魔棒', move: '移动' }[selTool]}</span>
               <span className={`mode-chev ${toolMenu ? 'open' : ''}`}>›</span>
             </button>
             <DropMenu anchorRef={toolBtnRef} open={toolMenu} onClose={() => setToolMenu(false)}>
@@ -1324,6 +1591,7 @@ export function EditorScreen() {
                     ['rect', '矩形', <RectIcon size={16} key="r" />],
                     ['ellipse', '椭圆', <Ellipse size={16} key="e" />],
                     ['lasso', '套索', <Lasso size={16} key="l" />],
+                    ['polygon', '多边形', <Lasso size={16} key="p" />],
                     ['wand', '魔棒', <Wand size={16} key="w" />],
                     ['move', '移动', <Move size={16} key="m" />],
                   ] as [SelectTool, string, ReactNode][]).map(([id, label, icon]) => (
@@ -1401,6 +1669,14 @@ export function EditorScreen() {
                 <FlipV size={22} />
                 <span>垂直翻转</span>
               </button>
+              <button className="sel-btn" onClick={() => rotateFloating(false)}>
+                <span className="rot">↺</span>
+                <span>左转</span>
+              </button>
+              <button className="sel-btn" onClick={() => rotateFloating(true)}>
+                <span className="rot">↻</span>
+                <span>右转</span>
+              </button>
               <div className="sel-sep" />
               <button className="sel-btn" onClick={confirmFloating}>
                 <Check size={22} />
@@ -1429,11 +1705,11 @@ export function EditorScreen() {
                 </button>
               )}
               <button className="sel-btn" onClick={selFill}>
-                <Check size={22} />
+                <Bucket size={22} />
                 <span>填充</span>
               </button>
               <button className="sel-btn" onClick={selClearPixels}>
-                <Close size={22} />
+                <Eraser size={22} />
                 <span>清除</span>
               </button>
               <button className="sel-btn" onClick={() => selGrow(1)}>
@@ -1451,6 +1727,14 @@ export function EditorScreen() {
               <button className="sel-btn" onClick={() => transformSelection('flipV')}>
                 <FlipV size={22} />
                 <span>垂直翻转</span>
+              </button>
+              <button className="sel-btn" onClick={() => rotateSelection(true)}>
+                <span className="rot">↻</span>
+                <span>旋转90°</span>
+              </button>
+              <button className="sel-btn" onClick={() => void pasteFromSystem()}>
+                <Paste size={22} />
+                <span>系统粘贴</span>
               </button>
             </>
           ) : null}
@@ -1510,9 +1794,26 @@ export function EditorScreen() {
             >
               {contiguous ? '连续' : '全局'}
             </button>
+            <button
+              className={`chipbtn ${bucketAll ? 'on' : ''}`}
+              onClick={() => setBucketAll((v) => !v)}
+            >
+              {bucketAll ? '全部图层' : '当前层'}
+            </button>
           </>
         )}
-        {tool === 'dropper' && <span className="muted">取样 1×1 · 合成结果</span>}
+        {tool === 'dropper' && (
+          <>
+            <span>取样</span>
+            <button className={`chipbtn ${dropSize === 1 ? 'on' : ''}`} onClick={() => setDropSize(1)}>
+              1×1
+            </button>
+            <button className={`chipbtn ${dropSize === 3 ? 'on' : ''}`} onClick={() => setDropSize(3)}>
+              3×3
+            </button>
+            <span className="muted">合成结果</span>
+          </>
+        )}
         {tool === 'shade' && (
           <div className="shade-params">
             <div className="shade-line">
@@ -1673,6 +1974,24 @@ export function EditorScreen() {
           onAlphaLock={toggleAlphaLock}
         />
       )}
+      {sheet === 'resizeCanvas' && (
+        <ResizeSheet
+          title="修改画布大小"
+          width={width}
+          height={height}
+          hint="改变画布尺寸，像素保持原位置（左上对齐），超出部分裁掉、新增区域透明。"
+          onApply={(w, h, anchor) => applyResize(w, h, 'canvas', anchor)}
+        />
+      )}
+      {sheet === 'resizeImage' && (
+        <ResizeSheet
+          title="修改图像大小"
+          width={width}
+          height={height}
+          hint="按最近邻缩放所有图层，像素画不会变糊。"
+          onApply={(w, h, anchor) => applyResize(w, h, 'image', anchor)}
+        />
+      )}
       {sheet === 'grid' && (
         <GridSheet
           color={gridColor}
@@ -1680,7 +1999,12 @@ export function EditorScreen() {
           step={gridStep}
           onColor={setGridColor}
           onStep={setGridStep}
-          onToggle={() => setGridOn((v) => !v)}
+          onToggle={() => {
+            const next = !gridOn;
+            setGridOn(next);
+            const cfg = loadSettings();
+            saveSettings({ ...cfg, gridDefault: next });
+          }}
         />
       )}
       {sheet === 'export' && project && (

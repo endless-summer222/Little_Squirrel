@@ -214,7 +214,7 @@ export function SettingsSheet() {
     ['网格默认显示', '开'],
     ['历史内存上限', '96 MB'],
     ['语言', '简体中文'],
-    ['版本', '0.10_preview'],
+    ['版本', '0.10'],
   ];
   return (
     <Sheet title="设置">
@@ -802,11 +802,12 @@ export function EffectsSheet({
   hasSelection,
   onAdjustHSL,
 }: {
-  onNoise: (amount: number) => void;
+  onNoise: (amount: number, mode: 'color' | 'mono') => void;
   hasSelection: boolean;
   onAdjustHSL: (dL: number, dS: number) => void;
 }) {
   const [amount, setAmount] = useState(18);
+  const [noiseMode, setNoiseMode] = useState<'color' | 'mono'>('mono');
   const [dL, setDL] = useState(0);
   const [dS, setDS] = useState(0);
   return (
@@ -850,6 +851,17 @@ export function EffectsSheet({
       )}
       <div className="row">
         <span>噪点</span>
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button className={`chipbtn ${noiseMode === 'mono' ? 'on' : ''}`} onClick={() => setNoiseMode('mono')}>
+            单色
+          </button>
+          <button className={`chipbtn ${noiseMode === 'color' ? 'on' : ''}`} onClick={() => setNoiseMode('color')}>
+            彩色
+          </button>
+        </div>
+      </div>
+      <div className="row">
+        <span>强度</span>
         <span className="muted">{amount}%</span>
       </div>
       <div className="slider-line">
@@ -878,7 +890,7 @@ export function EffectsSheet({
       <button
         className="primary"
         style={{ width: '100%', marginTop: 12 }}
-        onClick={() => onNoise(amount)}
+        onClick={() => onNoise(amount, noiseMode)}
       >
         应用噪点
       </button>
@@ -1080,6 +1092,74 @@ export function OverlaySheet({
           }}
         />
       </label>
+    </Sheet>
+  );
+}
+
+export function ResizeSheet({
+  title,
+  width,
+  height,
+  hint,
+  onApply,
+}: {
+  title: string;
+  width: number;
+  height: number;
+  hint: string;
+  onApply: (w: number, h: number, anchor: string) => void;
+}) {
+  const [w, setW] = useState(String(width));
+  const [h, setH] = useState(String(height));
+  const [anchor, setAnchor] = useState('tl');
+  const num = (v: string, fallback: number) => {
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) ? Math.min(1024, Math.max(1, n)) : fallback;
+  };
+  return (
+    <Sheet title={title}>
+      <p className="muted" style={{ marginTop: 0 }}>{hint}</p>
+      <div className="size-inputs">
+        <label>
+          <span>宽</span>
+          <input
+            type="number"
+            inputMode="numeric"
+            value={w}
+            onChange={(e) => setW(e.target.value.replace(/[^0-9]/g, '').slice(0, 4))}
+            aria-label="新宽度"
+          />
+        </label>
+        <span className="times">×</span>
+        <label>
+          <span>高</span>
+          <input
+            type="number"
+            inputMode="numeric"
+            value={h}
+            onChange={(e) => setH(e.target.value.replace(/[^0-9]/g, '').slice(0, 4))}
+            aria-label="新高度"
+          />
+        </label>
+      </div>
+      <div className="muted" style={{ margin: '14px 0 6px' }}>保留区域（画布尺寸变化时生效）</div>
+      <div className="anchor-grid">
+        {(['tl', 'tc', 'tr', 'ml', 'mc', 'mr', 'bl', 'bc', 'br'] as const).map((a) => (
+          <button
+            key={a}
+            className={`anchor-cell ${anchor === a ? 'on' : ''}`}
+            onClick={() => setAnchor(a)}
+            aria-label={a}
+          />
+        ))}
+      </div>
+      <button
+        className="primary"
+        style={{ width: '100%', marginTop: 14 }}
+        onClick={() => onApply(num(w, width), num(h, height), anchor)}
+      >
+        应用
+      </button>
     </Sheet>
   );
 }

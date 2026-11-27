@@ -58,7 +58,7 @@ export function App() {
       {!ready ? (
         <div className="splash">
           <div className="splash-logo">Little Squirrel</div>
-          <div className="splash-sub">像素 UV 贴图编辑器</div>
+          <div className="splash-sub">像素绘制工具</div>
         </div>
       ) : screen === 'library' ? (
         <LibraryScreen />
